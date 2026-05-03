@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <title>GradeFlow — Student Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ══════════════════════════
+       SETUP WIZARD OVERLAY
+  ══════════════════════════ -->
+  <div id="setup-overlay" class="setup-overlay hidden">
+    <div class="setup-modal">
+      <div class="setup-logo">
+        <svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="flex-shrink:0;border-radius:12px;box-shadow:0 4px 14px rgba(37,99,235,0.4)">
+          <rect width="44" height="44" rx="12" fill="#2563eb"/>
+          <rect width="44" height="44" rx="12" fill="#3b82f6" opacity="0.35"/>
+          <rect x="7"  y="33" width="6" height="6"   rx="2" fill="white" opacity="0.28"/>
+          <rect x="15" y="27" width="6" height="12"  rx="2" fill="white" opacity="0.52"/>
+          <rect x="23" y="21" width="6" height="18"  rx="2" fill="white" opacity="0.75"/>
+          <rect x="31" y="13" width="6" height="26"  rx="2" fill="white"/>
+          <polyline points="10,30 18,24 26,18 34,11" fill="none" stroke="#93c5fd" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="10" cy="30" r="2.5" fill="#bfdbfe"/>
+          <circle cx="18" cy="24" r="2.5" fill="#bfdbfe"/>
+          <circle cx="26" cy="18" r="2.5" fill="#bfdbfe"/>
+          <circle cx="34" cy="11" r="3.5" fill="white"/>
+        </svg>
+        <div>
+          <div class="setup-logo-title">Grade<span style="color:#2563eb">Flow</span></div>
+          <div class="setup-logo-sub">Student Tracker</div>
+        </div>
+      </div>
+
+      <!-- Step 1: Uni info -->
+      <div class="setup-step active" id="step-1">
+        <h2 class="setup-heading">Hey there! 👋</h2>
+        <p class="setup-hint">Let's set up your semester tracker in 2 quick steps.</p>
+        <div class="setup-field">
+          <label class="setup-label">Your Name (optional)</label>
+          <input type="text" class="setup-input" id="setup-name" placeholder="e.g. Zafar" />
+        </div>
+        <div class="setup-field">
+          <label class="setup-label">University / Institute</label>
+          <input type="text" class="setup-input" id="setup-uni" placeholder="e.g. NUTECH, FAST, NUST…" />
+        </div>
+        <div class="setup-field">
+          <label class="setup-label">Semester</label>
+          <input type="text" class="setup-input" id="setup-sem" placeholder="e.g. Spring 2026, 3rd Semester" />
+        </div>
+        <button class="setup-btn" id="step1-next">Continue →</button>
+      </div>
+
+      <!-- Step 2: Subject mode -->
+      <div class="setup-step" id="step-2">
+        <h2 class="setup-heading">Your Subjects 📚</h2>
+        <p class="setup-hint">How do you want to set up your subjects?</p>
+        <div class="setup-choices">
+          <button class="setup-choice" id="choice-default">
+            <span class="choice-icon">⚡</span>
+            <strong>Use Default Subjects</strong>
+            <small>NUTECH CS Spring 2026 preset (9 subjects)</small>
+          </button>
+          <button class="setup-choice" id="choice-custom">
+            <span class="choice-icon">✏️</span>
+            <strong>Customize My Subjects</strong>
+            <small>Enter your own subjects, codes & credits</small>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 3: Custom subjects editor -->
+      <div class="setup-step" id="step-3">
+        <h2 class="setup-heading">Add Your Subjects ✏️</h2>
+        <p class="setup-hint">Add each subject. You can add more later.</p>
+        <div id="custom-subjects-list" class="custom-subjects-list">
+          <!-- Rows added by JS -->
+        </div>
+        <button class="setup-add-row" id="btn-add-subject-row">+ Add Another Subject</button>
+        <div class="setup-field-row">
+          <button class="setup-btn-outline" id="step3-back">← Back</button>
+          <button class="setup-btn" id="step3-done">Start Tracking 🚀</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════
+       TOP NAV
+  ══════════════════════════ -->
+  <header class="topnav" role="banner">
+    <div class="topnav-logo">
+      <svg class="logo-svg-mark" width="34" height="34" viewBox="0 0 34 34" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="34" height="34" rx="9" fill="#2563eb"/>
+        <rect width="34" height="34" rx="9" fill="#3b82f6" opacity="0.35"/>
+        <rect x="5"  y="25"  width="4.5" height="4.5"  rx="1.5" fill="white" opacity="0.28"/>
+        <rect x="11" y="21"  width="4.5" height="8.5"  rx="1.5" fill="white" opacity="0.52"/>
+        <rect x="17" y="16"  width="4.5" height="13.5" rx="1.5" fill="white" opacity="0.75"/>
+        <rect x="23" y="10"  width="4.5" height="19.5" rx="1.5" fill="white"/>
+        <polyline points="7.25,22.5 13.25,18 19.25,13 25.25,7.5" fill="none" stroke="#93c5fd" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="7.25"  cy="22.5" r="1.8" fill="#bfdbfe"/>
+        <circle cx="13.25" cy="18"   r="1.8" fill="#bfdbfe"/>
+        <circle cx="19.25" cy="13"   r="1.8" fill="#bfdbfe"/>
+        <circle cx="25.25" cy="7.5"  r="2.5" fill="white"/>
+      </svg>
+      <div class="logo-text">
+        <span class="logo-title">Grade<span class="logo-title-accent">Flow</span></span>
+        <span class="logo-sub" id="nav-semester-label">Loading…</span>
+      </div>
+    </div>
+    <div class="topnav-actions">
+      <button class="icon-btn" id="btn-theme" title="Toggle dark mode" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-export" title="Export as Excel (.xlsx)" aria-label="Export data">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <input type="file" id="import-file" accept=".json" style="display:none" aria-hidden="true" />
+      <button class="icon-btn danger" id="btn-reset-all" title="Reset all data" aria-label="Reset all data">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════
+       MAIN CONTENT
+  ══════════════════════════ -->
+  <main id="app-main" role="main">
+
+    <!-- ─── DASHBOARD ─── -->
+    <section id="page-dashboard" class="page active" aria-label="Dashboard">
+      <div class="page-header">
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-subtitle" id="last-updated-label">No data yet</p>
+      </div>
+      <div class="stats-strip" id="stats-strip">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-gpa">—</div>
+          <div class="stat-label">GPA</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-attendance">—</div>
+          <div class="stat-label">Attendance</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-subjects">—</div>
+          <div class="stat-label">Subjects</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-credits">—</div>
+          <div class="stat-label">Credits</div>
+        </div>
+      </div>
+      <div class="cards-grid" id="dashboard-cards"></div>
+    </section>
+
+    <!-- ─── MARKS ─── -->
+    <section id="page-marks" class="page" aria-label="Marks">
+      <div class="page-header">
+        <h1 class="page-title">Marks</h1>
+        <p class="page-subtitle">Tap a subject to enter your scores</p>
+      </div>
+      <div class="cards-list" id="marks-cards"></div>
+    </section>
+
+    <!-- ─── ATTENDANCE ─── -->
+    <section id="page-attendance" class="page" aria-label="Attendance">
+      <div class="page-header">
+        <h1 class="page-title">Attendance</h1>
+        <p class="page-subtitle">Track your presence per subject</p>
+      </div>
+      <div class="cards-list" id="attendance-cards"></div>
+    </section>
+
+    <!-- ─── ANALYZE ─── -->
+    <section id="page-analyze" class="page" aria-label="Analyze">
+      <div class="page-header">
+        <h1 class="page-title">Analyze</h1>
+        <p class="page-subtitle">Insights into your semester performance</p>
+      </div>
+      <div class="analyze-gpa-block" id="analyze-gpa-block">
+        <div class="big-gpa-label">Semester GPA</div>
+        <div class="big-gpa-value" id="analyze-gpa-value">—</div>
+        <div class="big-gpa-grade" id="analyze-gpa-grade">No data yet</div>
+        <div class="semester-progress-text" id="semester-progress-text"></div>
+      </div>
+      <div class="analyze-section">
+        <h2 class="analyze-section-title">📊 Marks % per Subject</h2>
+        <div class="bar-chart" id="chart-marks"></div>
+      </div>
+      <div class="analyze-section">
+        <h2 class="analyze-section-title">📅 Attendance % per Subject</h2>
+        <div class="bar-chart" id="chart-attendance"></div>
+      </div>
+      <div class="analyze-two-col">
+        <div class="analyze-section">
+          <h2 class="analyze-section-title green-title">💪 Strengths</h2>
+          <div class="sw-list" id="strengths-list"></div>
+        </div>
+        <div class="analyze-section">
+          <h2 class="analyze-section-title red-title">⚠️ Needs Work</h2>
+          <div class="sw-list" id="weaknesses-list"></div>
+        </div>
+      </div>
+      <div class="analyze-section">
+        <h2 class="analyze-section-title amber-title">🚨 Attendance Risk</h2>
+        <div class="sw-list" id="att-risk-list"></div>
+      </div>
+      <div class="analyze-section">
+        <h2 class="analyze-section-title">🎯 Final Exam Calculator</h2>
+        <div class="calc-block">
+          <div class="calc-row">
+            <label class="calc-label" for="calc-subject">Subject</label>
+            <select class="calc-select" id="calc-subject"></select>
+          </div>
+          <div class="calc-row">
+            <label class="calc-label" for="calc-target">Target Grade</label>
+            <select class="calc-select" id="calc-target">
+              <option value="90">A (90%+)</option>
+              <option value="85">A- (85%+)</option>
+              <option value="80">B+ (80%+)</option>
+              <option value="75">B (75%+)</option>
+              <option value="70">B- (70%+)</option>
+              <option value="65">C+ (65%+)</option>
+              <option value="60">C (60%+)</option>
+              <option value="55">C- (55%+)</option>
+              <option value="50">D+ (50%+)</option>
+              <option value="45">D (45%+)</option>
+            </select>
+          </div>
+          <div class="calc-row">
+            <label class="calc-label" for="calc-final-total">Final Exam Total Marks</label>
+            <input type="number" class="calc-input" id="calc-final-total" placeholder="e.g. 50" min="1" max="200" />
+          </div>
+          <button class="btn-primary" id="btn-calculate">Calculate Required Score</button>
+          <div class="calc-result" id="calc-result" aria-live="polite"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ══════════════════════════
+       BOTTOM NAV
+  ══════════════════════════ -->
+  <nav class="bottom-tabs" role="navigation" aria-label="Main navigation">
+    <button class="tab-btn active" data-page="dashboard" aria-label="Dashboard">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="tab-btn" data-page="marks" aria-label="Marks">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      <span>Marks</span>
+    </button>
+    <button class="tab-btn" data-page="attendance" aria-label="Attendance">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>Attend.</span>
+    </button>
+    <button class="tab-btn" data-page="analyze" aria-label="Analyze">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      <span>Analyze</span>
+    </button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- ══════════════════════════
+       RESET CONFIRMATION MODAL
+  ══════════════════════════ -->
+  <div id="reset-modal" class="reset-modal-overlay hidden">
+    <div class="reset-modal-box">
+      <div id="reset-step-1" class="reset-step active">
+        <div class="reset-modal-icon">⚠️</div>
+        <h2 class="reset-modal-title">Reset All Data?</h2>
+        <p class="reset-modal-desc">This will permanently delete all your marks, attendance, and settings. This action <strong>cannot be undone.</strong></p>
+        <div class="reset-modal-actions">
+          <button class="reset-btn-cancel" id="reset-cancel-1">Cancel</button>
+          <button class="reset-btn-danger" id="reset-confirm-1">Yes, Continue</button>
+        </div>
+      </div>
+      <div id="reset-step-2" class="reset-step">
+        <div class="reset-modal-icon">🚨</div>
+        <h2 class="reset-modal-title">Are You Absolutely Sure?</h2>
+        <p class="reset-modal-desc">You're about to wipe your entire semester's worth of data. Every grade, every attendance record — gone forever.</p>
+        <div class="reset-modal-actions">
+          <button class="reset-btn-cancel" id="reset-cancel-2">No, Keep My Data</button>
+          <button class="reset-btn-danger" id="reset-confirm-2">I'm Sure, Proceed</button>
+        </div>
+      </div>
+      <div id="reset-step-3" class="reset-step">
+        <div class="reset-modal-icon">🔐</div>
+        <h2 class="reset-modal-title">Final Confirmation</h2>
+        <p class="reset-modal-desc">Type <strong id="reset-confirm-word"></strong> to confirm you want to erase everything.</p>
+        <input type="text" id="reset-type-input" class="reset-type-input" placeholder="Type here…" autocomplete="off" />
+        <div class="reset-type-hint" id="reset-type-hint"></div>
+        <div class="reset-modal-actions">
+          <button class="reset-btn-cancel" id="reset-cancel-3">Cancel</button>
+          <button class="reset-btn-danger" id="reset-final-go" disabled>Erase Everything</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
