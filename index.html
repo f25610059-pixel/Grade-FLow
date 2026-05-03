@@ -6,6 +6,33 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>GradeFlow — Student Tracker</title>
+
+  <!-- PWA & SEO Meta -->
+  <meta name="description" content="Track your grades, attendance and GPA — clean, fast, offline-ready student semester tracker." />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="GradeFlow" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="GradeFlow — Student Tracker" />
+  <meta property="og:description" content="Track grades, attendance & GPA in one clean web app. No login, works offline." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://yourdomain.com/" />
+  <meta property="og:image" content="https://yourdomain.com/icons/icon-512.png" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="GradeFlow — Student Tracker" />
+  <meta name="twitter:description" content="Track grades, attendance & GPA in one clean web app." />
+  <meta name="twitter:image" content="https://yourdomain.com/icons/icon-512.png" />
+
+  <!-- Favicon & Icons -->
+  <link rel="icon" type="image/x-icon" href="/icons/favicon.ico" />
+  <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png" />
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
@@ -309,5 +336,16 @@
   </div>
 
   <script src="app.js"></script>
+
+  <!-- Register Service Worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('GradeFlow SW registered:', reg.scope))
+          .catch(err => console.warn('SW registration failed:', err));
+      });
+    }
+  </script>
 </body>
 </html>
