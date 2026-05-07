@@ -1,46 +1,71 @@
-# 🎓 GradeFlow — Student Semester Tracker
+# GradeFlow — Student Semester Tracker
 
-A clean, mobile-friendly web app to track your **grades, attendance, and GPA** — all in your browser. No backend, no login, no install.
+> Track your grades, attendance, and GPA — all in your browser. No backend. No login. No install.
 
 **Live Demo → [zafarikomail-cmd.github.io/Grade-FLow](https://zafarikomail-cmd.github.io/Grade-FLow)**
 
----
-
-## ✨ Features
-
-- 📊 **Marks Tracker** — Quizzes, Assignments, PBL, OEL, Midterm & Final (regular subjects) + Tasks, Vivas, OEL & PBL (lab subjects)
-- 📅 **Attendance Tracker** — Present / Absent / Late logging with manual override
-- 📈 **Analyze Page** — GPA, bar charts, strengths & weaknesses, attendance risk
-- 🎯 **Final Exam Calculator** — Find exactly what you need to score to hit your target grade
-- 🌙 **Dark / Light Mode** — Clean dark theme, no pink involved
-- 💾 **Local Storage** — Data saves in your browser automatically
-- 📱 **Mobile Friendly** — Works great on phone & desktop
-- ⚡ **Zero Dependencies** — Pure HTML, CSS, JavaScript
-- 📤 **Excel Export** — Export your full semester data as a styled `.xlsx` file
-- 💾 **JSON Backup & Import** — Export/import a full data backup
+![HTML](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white)
+![CSS](https://img.shields.io/badge/CSS3-1572B6?style=flat&logo=css3&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-blue?style=flat)
 
 ---
 
-## 🚀 Getting Started
+## Overview
 
-Just open `index.html` in any browser — that's it.
-
-Or visit the live GitHub Pages link above.
+GradeFlow is a lightweight, offline-ready web app built for students who want a clean and fast way to stay on top of their semester. Enter your marks and attendance, watch your GPA update instantly, and find out exactly what you need to score on your final exam — all without creating an account or installing anything.
 
 ---
 
-## 🗂️ Project Structure
+## Features
+
+| Feature | Description |
+|---|---|
+| 📊 **Marks Tracker** | Quizzes, assignments, PBL, OEL, midterm & final for regular subjects; tasks, vivas, OEL & PBL for lab subjects |
+| 📅 **Attendance Tracker** | Log present / absent / late with one tap, plus manual override |
+| 📈 **Analyze Page** | Live GPA, bar charts, strengths & weaknesses, attendance risk flags |
+| 🎯 **Final Exam Calculator** | Enter your target grade — get the exact score you need on the final |
+| 🌙 **Dark / Light Mode** | Clean dark theme, system-aware toggle |
+| 💾 **Auto-Save** | All data persists in browser localStorage automatically |
+| 📤 **Excel Export** | Export your full semester data as a styled `.xlsx` file |
+| 🔁 **JSON Backup & Restore** | Export and re-import a full data backup anytime |
+| 📱 **Mobile-First Design** | Optimized for phone use, works great on desktop too |
+| ⚡ **Zero Dependencies** | Pure HTML, CSS, and JavaScript — no frameworks, no build step |
+
+---
+
+## Getting Started
+
+**Option 1 — Live version**
+
+Visit the live app directly:
+[zafarikomail-cmd.github.io/Grade-FLow](https://zafarikomail-cmd.github.io/Grade-FLow)
+
+**Option 2 — Run locally**
+
+```bash
+git clone https://github.com/zafarikomail-cmd/Grade-FLow.git
+cd Grade-FLow
+# Open index.html in any browser — no server needed
+```
+
+---
+
+## Project Structure
 
 ```
 Grade-FLow/
-├── index.html    # App structure & setup wizard
-├── styles.css    # Full light/dark theme styling
+├── index.html    # App shell, setup wizard, page layouts
+├── styles.css    # Full light/dark theme, responsive layout
 └── app.js        # All logic — marks, attendance, GPA, charts, export
 ```
 
 ---
 
-## 🏫 Default Subjects (NUTECH CS Spring 2026)
+## Default Subjects
+
+The app ships with a preset for **NUTECH CS Spring 2026**. You can replace these with your own subjects during the first-launch setup wizard.
 
 | Code  | Subject                        | Credits | Type    |
 |-------|--------------------------------|---------|---------|
@@ -54,83 +79,91 @@ Grade-FLow/
 | MT220 | Probability & Statistics       | 3       | Regular |
 | GE231 | Fehm-e-Quran I                 | 1       | Regular |
 
-> You can fully customize subjects during the setup wizard. Lab subjects are auto-detected by the word "Lab" in the name, or you can set `isLab: true` manually.
+> Lab subjects are auto-detected by the word "Lab" in the subject name, or can be flagged manually with `isLab: true`.
 
 ---
 
-## 📐 Grading Scale
+## Grading Scale
 
-| Grade | Points | Percentage |
-|-------|--------|------------|
-| A     | 4.0    | ≥ 90%      |
-| A-    | 3.7    | ≥ 85%      |
-| B+    | 3.3    | ≥ 80%      |
-| B     | 3.0    | ≥ 75%      |
-| B-    | 2.7    | ≥ 70%      |
-| C+    | 2.3    | ≥ 65%      |
-| C     | 2.0    | ≥ 60%      |
-| C-    | 1.7    | ≥ 55%      |
-| D+    | 1.3    | ≥ 50%      |
-| D     | 1.0    | ≥ 45%      |
-| F     | 0.0    | < 45%      |
+| Grade | Points | Minimum % |
+|-------|--------|-----------|
+| A     | 4.0    | 90%       |
+| A−    | 3.7    | 85%       |
+| B+    | 3.3    | 80%       |
+| B     | 3.0    | 75%       |
+| B−    | 2.7    | 70%       |
+| C+    | 2.3    | 65%       |
+| C     | 2.0    | 60%       |
+| C−    | 1.7    | 55%       |
+| D+    | 1.3    | 50%       |
+| D     | 1.0    | 45%       |
+| F     | 0.0    | < 45%     |
 
 ---
 
-## ⚖️ Marks Weightage
+## Marks Weightage
 
 ### Regular Subjects
-| Component       | Weight | Out of |
-|----------------|--------|--------|
-| Quizzes (avg)  | 15%    | 10 each |
-| Assignments (avg) | 10% | 10 each |
-| PBL            | 5%     | 10      |
-| OEL            | 5%     | 10      |
-| Mid Exam       | 25%    | 25      |
-| Final Exam     | 45%    | Variable |
+
+| Component          | Weight | Max Marks  |
+|--------------------|--------|------------|
+| Quizzes (average)  | 15%    | 10 each    |
+| Assignments (avg)  | 10%    | 10 each    |
+| PBL                | 5%     | 10         |
+| OEL                | 5%     | 10         |
+| Mid Exam           | 25%    | 25         |
+| Final Exam         | 45%    | Variable   |
 
 ### Lab Subjects
-| Component      | Weight |
-|----------------|--------|
-| Tasks (avg)    | 50%    |
-| Vivas (avg)    | 20%    |
-| OEL            | 15%    |
-| PBL            | 15%    |
 
-> Components with no data entered are excluded from the weighted average, so your percentage updates live as you fill in marks.
+| Component        | Weight |
+|------------------|--------|
+| Tasks (average)  | 50%    |
+| Vivas (average)  | 20%    |
+| OEL              | 15%    |
+| PBL              | 15%    |
 
----
-
-## 🛠️ Built With
-
-- Vanilla HTML / CSS / JavaScript
-- [Sora](https://fonts.google.com/specimen/Sora) + [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) — Google Fonts
-- No frameworks. No libraries. No nonsense.
+> Components with no data entered are excluded from the weighted average, so your percentage reflects only what you've filled in.
 
 ---
 
-## 🐛 Changelog
+## Changelog
 
-### v2 — Bug Fix Release
+### v2.0 — Bug Fix Release
 
-Six bugs identified and resolved:
+Six bugs identified and resolved in this release.
 
-1. **Lab percentage double-scaling** — Lab subject totals were being divided by `weightTotal` and then multiplied by 100 again, producing inflated percentages (e.g. 500% instead of 50%). Fixed to return the correctly pre-scaled `weightedSum` directly.
+**1. Missing hidden file input — import crash (Critical)**
+The import button called `.click()` on a `#import-file` element that didn't exist in the HTML, causing a hard crash. Fixed by adding the missing hidden `<input type="file">` element.
 
-2. **Final exam calculator wrong formula** — The required final score formula mixed weighted points with raw percentages, producing incorrect results. Rewritten to correctly back-calculate the needed final exam percentage from current weighted progress.
+**2. Final exam calculator: inverted epsilon boundary (Medium)**
+The "perfect score required" branch used `<= 100 + epsilon` as its upper bound, making the "impossible to pass" branch unreachable for values just above 100. Boundary corrected to `<= 100`.
 
-3. **Toast `id` lost after undo clone** — After cloning the toast element to reset its event listeners (used for undo), the cloned node lost its `id`, causing all subsequent `showToast()` calls to crash silently. Fixed by explicitly re-setting `freshToast.id = 'toast'` after the clone.
+**3. Attendance manual input: wrong event type (Medium)**
+Manual attendance inputs used the `change` event (fires on blur only), while marks inputs used `input` (fires on every keystroke). The attendance bar would not update live while typing. Corrected to use `input`.
 
-4. **Attendance toast showed raw database key** — Logging attendance displayed the internal storage key (e.g. `CS160_0`) in the toast instead of the human-readable subject code (e.g. `CS160`). Fixed to look up and display `sub.code`.
+**4. Lab percentage double-scaling (Low)**
+Lab subject totals were divided by `weightTotal` and then multiplied by 100 again, producing inflated percentages (e.g. 500% instead of 50%). Fixed to return the correctly pre-scaled value.
 
-5. **`setupTheme()` crash on null DATA** — `DATA._meta.theme` threw a TypeError when `DATA` was null in certain first-load edge cases. Added a null-safe guard.
+**5. Toast `id` lost after undo clone (Low)**
+After cloning the toast element to reset its undo listener, the cloned node lost its `id`, causing all subsequent `showToast()` calls to silently fail. Fixed by re-assigning `freshToast.id = 'toast'` after the clone.
 
-6. **Green attendance bar invisible** — The attendance progress bar had no color when attendance was ≥ 75% (green). The `barClass` was set to an empty string for the green state, and no matching CSS rule existed. Fixed by adding a `.safe` modifier class and the corresponding CSS rule `background: var(--green)`.
+**6. Green attendance bar not visible (Low)**
+The attendance progress bar had no fill color when attendance was ≥ 75%. The `barClass` was set to an empty string for the green/safe state and no matching CSS rule existed. Fixed by adding the `.safe` modifier class and a corresponding CSS rule.
 
 ---
 
-## 📄 License
+## Built With
 
-MIT — free to use, modify, and share.
+- [Sora](https://fonts.google.com/specimen/Sora) — UI typeface
+- [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) — monospace inputs
+- No frameworks. No libraries. No build tools.
+
+---
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute.
 
 ---
 
