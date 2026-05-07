@@ -3,8 +3,6 @@
    Friendly, warm, modern. Sora font. Full light/dark.
 ══════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap');
-
 /* ─── VARIABLES ─── */
 :root {
   --bg:          #f0f4f8;
@@ -17,6 +15,7 @@
   --text:        #0f1e2e;
   --text2:       #4a5f73;
   --text3:       #8fa3b8;
+  --text-muted:  #8fa3b8;
 
   --accent:      #2563eb;
   --accent2:     #3b7dff;
@@ -363,8 +362,6 @@ body {
   height: var(--nav-h);
   gap: 12px;
   box-shadow: var(--shadow);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
 }
 
 .topnav-logo {
@@ -667,6 +664,48 @@ body {
 .card-total-grade.amber { color: var(--amber); }
 .card-total-grade.red   { color: var(--red); }
 
+/* ─── CLASS AVERAGE BLOCK ─── */
+.class-avg-block {
+  background: var(--accent-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 14px;
+}
+.class-avg-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  display: block;
+}
+.class-avg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.class-avg-input {
+  width: 90px !important;
+  flex-shrink: 0;
+}
+.class-avg-result {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--mono);
+  color: var(--text2);
+  flex: 1;
+}
+.class-avg-gpa {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--surface);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
 /* ─── MARKS INPUT ─── */
 .marks-section-title {
   font-size: 11px;
@@ -816,6 +855,7 @@ body {
   border-radius: 10px;
   transition: width 0.5s cubic-bezier(0.4,0,0.2,1);
 }
+.att-pct-bar.safe   { background: var(--green); }
 .att-pct-bar.warn   { background: var(--amber); }
 .att-pct-bar.danger { background: var(--red); }
 
@@ -972,6 +1012,9 @@ body {
   flex-shrink: 0;
   font-family: var(--mono);
   text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bar-track {
@@ -989,7 +1032,12 @@ body {
   display: flex;
   align-items: center;
   padding: 0 8px;
-  min-width: 2px;
+  min-width: 0;
+}
+.bar-fill.no-data {
+  background: var(--surface3);
+  color: var(--text2);
+  justify-content: center;
 }
 
 .bar-fill.bar-green { background: var(--green); }
@@ -1065,6 +1113,10 @@ body {
   background-size: 14px;
   padding-right: 32px;
   cursor: pointer;
+}
+
+[data-theme="dark"] .calc-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23d1d5db' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
 
 .calc-select:focus, .calc-input:focus { border-color: var(--accent); }
@@ -1220,7 +1272,7 @@ body {
   body { max-width: 960px; margin: 0 auto; }
   .topnav { max-width: 960px; left: 50%; transform: translateX(-50%); right: auto; width: 960px; }
   .bottom-tabs { max-width: 960px; left: 50%; transform: translateX(-50%); right: auto; width: 960px; }
-  .toast { bottom: calc(var(--tab-h) + 24px); }
+  .toast { bottom: calc(var(--tab-h) + env(safe-area-inset-bottom) + 24px); }
 }
 
 /* ─── MOBILE ENHANCEMENTS ─── */
@@ -1356,10 +1408,6 @@ body {
 .reset-type-hint.no-match { color: var(--red); }
 
 @media print {
-  .reset-modal-overlay { display: none; }
-}
-
-@media print {
-  .topnav, .bottom-tabs, .toast, .setup-overlay { display: none; }
+  .reset-modal-overlay, .topnav, .bottom-tabs, .toast, .setup-overlay { display: none; }
   body { padding-bottom: 0; }
 }
