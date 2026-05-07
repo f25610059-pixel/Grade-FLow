@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>GradeFlow — Student Tracker</title>
@@ -17,23 +17,27 @@
   <meta property="og:title" content="GradeFlow — Student Tracker" />
   <meta property="og:description" content="Track grades, attendance & GPA in one clean web app. No login, works offline." />
   <meta property="og:type" content="website" />
-  <meta property="og:url" content="https://yourdomain.com/" />
-  <meta property="og:image" content="https://yourdomain.com/icons/icon-512.png" />
+  <!-- FIX 6: og:url must be an absolute URL; replace with your actual deployed origin -->
+  <meta property="og:url" content="https://gradeflow.app/" />
+  <meta property="og:image" content="./icons/icon-512.png" />
 
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="GradeFlow — Student Tracker" />
   <meta name="twitter:description" content="Track grades, attendance & GPA in one clean web app." />
-  <meta name="twitter:image" content="https://yourdomain.com/icons/icon-512.png" />
+  <meta name="twitter:image" content="./icons/icon-512.png" />
 
   <!-- Favicon & Icons -->
   <link rel="icon" type="image/x-icon" href="/icons/favicon.ico" />
-  <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
-  <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512.png" />
+  <!-- FIX 4: Apple touch icon standard size is 180×180, not 192 or 512 -->
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png" />
+  <!-- Keep generic icons for PWA manifest use -->
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+  <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png" />
 
   <!-- PWA Manifest -->
   <link rel="manifest" href="/manifest.json" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
@@ -69,17 +73,21 @@
       <div class="setup-step active" id="step-1">
         <h2 class="setup-heading">Hey there! 👋</h2>
         <p class="setup-hint">Let's set up your semester tracker in 2 quick steps.</p>
+        <!-- FIX 1 & 2: Added for= attributes linking labels to inputs; added autocomplete hints -->
         <div class="setup-field">
-          <label class="setup-label">Your Name (optional)</label>
-          <input type="text" class="setup-input" id="setup-name" placeholder="e.g. Zafar" />
+          <label class="setup-label" for="setup-name">Your Name (optional)</label>
+          <input type="text" class="setup-input" id="setup-name" placeholder="e.g. Zafar"
+                 autocomplete="given-name" />
         </div>
         <div class="setup-field">
-          <label class="setup-label">University / Institute</label>
-          <input type="text" class="setup-input" id="setup-uni" placeholder="e.g. NUTECH, FAST, NUST…" />
+          <label class="setup-label" for="setup-uni">University / Institute</label>
+          <input type="text" class="setup-input" id="setup-uni" placeholder="e.g. NUTECH, FAST, NUST…"
+                 autocomplete="organization" />
         </div>
         <div class="setup-field">
-          <label class="setup-label">Semester</label>
-          <input type="text" class="setup-input" id="setup-sem" placeholder="e.g. Spring 2026, 3rd Semester" />
+          <label class="setup-label" for="setup-sem">Semester</label>
+          <input type="text" class="setup-input" id="setup-sem" placeholder="e.g. Spring 2026, 3rd Semester"
+                 autocomplete="off" />
         </div>
         <button class="setup-btn" id="step1-next">Continue →</button>
       </div>
@@ -149,10 +157,14 @@
       <button class="icon-btn" id="btn-export" title="Export as Excel (.xlsx)" aria-label="Export data">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
-      <input type="file" id="import-file" accept=".json" style="display:none" aria-hidden="true" />
+      <button class="icon-btn" id="btn-import" title="Import data backup" aria-label="Import data backup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/></svg>
+      </button>
       <button class="icon-btn danger" id="btn-reset-all" title="Reset all data" aria-label="Reset all data">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
       </button>
+      <!-- Import file input lives here, hidden, triggered by #btn-import -->
+      <input type="file" id="import-file" accept=".json" style="display:none" aria-hidden="true" />
     </div>
   </header>
 
@@ -244,27 +256,30 @@
         <h2 class="analyze-section-title">🎯 Final Exam Calculator</h2>
         <div class="calc-block">
           <div class="calc-row">
+            <!-- FIX 1: label for= added -->
             <label class="calc-label" for="calc-subject">Subject</label>
             <select class="calc-select" id="calc-subject"></select>
           </div>
           <div class="calc-row">
             <label class="calc-label" for="calc-target">Target Grade</label>
             <select class="calc-select" id="calc-target">
-              <option value="90">A (90%+)</option>
-              <option value="85">A- (85%+)</option>
-              <option value="80">B+ (80%+)</option>
-              <option value="75">B (75%+)</option>
-              <option value="70">B- (70%+)</option>
-              <option value="65">C+ (65%+)</option>
-              <option value="60">C (60%+)</option>
-              <option value="55">C- (55%+)</option>
+              <option value="45">D — Pass (45%+)</option>
               <option value="50">D+ (50%+)</option>
-              <option value="45">D (45%+)</option>
+              <option value="55">C- (55%+)</option>
+              <option value="60">C (60%+)</option>
+              <option value="65">C+ (65%+)</option>
+              <option value="70">B- (70%+)</option>
+              <option value="75">B (75%+)</option>
+              <option value="80">B+ (80%+)</option>
+              <option value="85">A- (85%+)</option>
+              <option value="90">A (90%+)</option>
             </select>
           </div>
           <div class="calc-row">
             <label class="calc-label" for="calc-final-total">Final Exam Total Marks</label>
-            <input type="number" class="calc-input" id="calc-final-total" placeholder="e.g. 50" min="1" max="200" />
+            <!-- FIX 3: Added step="1" to prevent decimal input -->
+            <input type="number" class="calc-input" id="calc-final-total" placeholder="e.g. 50"
+                   min="1" max="200" step="1" />
           </div>
           <button class="btn-primary" id="btn-calculate">Calculate Required Score</button>
           <div class="calc-result" id="calc-result" aria-live="polite"></div>
@@ -337,9 +352,9 @@
 
   <script src="app.js"></script>
 
-  <!-- Register Service Worker -->
+  <!-- Register Service Worker when served over HTTP/S, not file:// -->
   <script>
-    if ('serviceWorker' in navigator) {
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
           .then(reg => console.log('GradeFlow SW registered:', reg.scope))
