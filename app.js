@@ -35,6 +35,14 @@ const GPA_SCALE = [
 
 const STORAGE_KEY = 'gradeflow_v2';
 
+/* ─── LAB DETECTION ─── */
+function isLabSubject(sub) {
+  if (sub.isLab === true) return true;
+  // Auto-detect by name for backward compatibility. Match only standalone tokens like
+  // "Lab" or "Lab " and avoid false positives from words such as "Lab-on-a-Chip".
+  return /(^|[\s:;,.!?"'()\[\]-])lab($|[\s:;,.!?"'()\[\]-])/i.test(sub.name);
+}
+
 /* ─── RUNTIME SUBJECTS (loaded from DATA) ─── */
 let SUBJECTS = [];
 
@@ -44,10 +52,14 @@ function defaultSubjectData() {
     marks: {
       quizzes:     [null, null, null, null, null, null],
       assignments: [null, null, null, null, null, null],
+      tasks:       [],   // lab: dynamic array of task marks (/10 each)
+      vivas:       [],   // lab: dynamic array of viva marks (/10 each)
       pbl:         null,
+      oel:         null,
       mid:         null,
       finalObt:    null,
       finalTotal:  null,
+      classAvg:    null, // Bug G fix: initialize so it survives resets and JSON round-trips
     },
     attendance: { present: 0, absent: 0, late: 0 },
   };
@@ -64,6 +76,59 @@ function loadData() {
   } catch { return null; }
 }
 
+function sanitizeBackup(parsed) {
+  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid backup format.');
+  if (!parsed._meta || !Array.isArray(parsed._subjects)) throw new Error('Invalid GradeFlow backup file.');
+  const subjects = parsed._subjects.map(sub => {
+    if (!sub || typeof sub !== 'object' || !sub.id) throw new Error('Backup subjects list is corrupt.');
+    return {
+      id: String(sub.id),
+      code: String(sub.code || sub.id),
+      name: String(sub.name || sub.code || sub.id),
+      credits: Number.isFinite(Number(sub.credits)) ? Number(sub.credits) : 3,
+    };
+  });
+
+  const sanitized = {
+    _meta: {
+      // Whitelist only known _meta fields — never spread untrusted backup _meta blindly
+      lastUpdated: parsed._meta.lastUpdated || null,
+      theme:       parsed._meta.theme === 'dark' ? 'dark' : 'light',
+      name:        typeof parsed._meta.name     === 'string' ? parsed._meta.name     : '',
+      uni:         typeof parsed._meta.uni      === 'string' ? parsed._meta.uni      : '',
+      semester:    typeof parsed._meta.semester === 'string' ? parsed._meta.semester : '',
+    },
+    _subjects: subjects,
+  };
+
+  const knownIds = new Set(subjects.map(sub => sub.id));
+  Object.keys(parsed).forEach(key => {
+    if (key === '_meta' || key === '_subjects') return;
+    if (!knownIds.has(key)) return; // discard stale subject keys
+    const item = parsed[key];
+    sanitized[key] = {
+      marks: (item && typeof item === 'object' && item.marks && typeof item.marks === 'object')
+        ? { ...defaultSubjectData().marks, ...item.marks }
+        : defaultSubjectData().marks,
+      attendance: (item && typeof item === 'object' && item.attendance && typeof item.attendance === 'object')
+        ? { ...defaultSubjectData().attendance, ...item.attendance }
+        : defaultSubjectData().attendance,
+    };
+  });
+
+  subjects.forEach(sub => {
+    if (!sanitized[sub.id]) sanitized[sub.id] = defaultSubjectData();
+    if (!Array.isArray(sanitized[sub.id].marks.quizzes)) sanitized[sub.id].marks.quizzes = defaultSubjectData().marks.quizzes.slice();
+    if (!Array.isArray(sanitized[sub.id].marks.assignments)) sanitized[sub.id].marks.assignments = defaultSubjectData().marks.assignments.slice();
+    if (!Array.isArray(sanitized[sub.id].marks.tasks)) sanitized[sub.id].marks.tasks = defaultSubjectData().marks.tasks.slice();
+    if (!Array.isArray(sanitized[sub.id].marks.vivas)) sanitized[sub.id].marks.vivas = defaultSubjectData().marks.vivas.slice();
+    if (sanitized[sub.id].marks.classAvg === undefined) sanitized[sub.id].marks.classAvg = null;
+    if (!sanitized[sub.id].attendance || typeof sanitized[sub.id].attendance !== 'object') sanitized[sub.id].attendance = defaultSubjectData().attendance;
+  });
+
+  return sanitized;
+}
+
 function initData(subjects, meta = {}) {
   const data = {
     _meta: { lastUpdated: null, theme: 'light', name: '', uni: '', semester: '', ...meta },
@@ -74,13 +139,14 @@ function initData(subjects, meta = {}) {
 }
 
 function saveData() {
+  if (!DATA || !DATA._meta) return;
   DATA._meta.lastUpdated = new Date().toISOString();
-  markDirty();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(DATA));
   } catch {
     showToast('⚠️ Storage full — data may not save');
   }
+  markDirty();
   updateLastUpdatedLabel();
 }
 
@@ -91,6 +157,13 @@ function pctToGrade(pct) {
     if (pct >= g.min) return g;
   }
   return GPA_SCALE[GPA_SCALE.length - 1];
+}
+
+function normalizeMark(raw, max) {
+  if (raw === null || raw === '' || raw === undefined) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(n, max));
 }
 
 function gradeColor(pct) {
@@ -114,29 +187,88 @@ function attBadgeClass(pct) {
   return 'badge-red';
 }
 
+/* ─── HTML ESCAPE HELPER ─── */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /* ─── MARKS CALCULATION ─── */
-function calcSubjectPct(marks) {
+function calcSubjectPct(marks, sub) {
+  // Lab subject calculation
+  if (sub && isLabSubject(sub)) {
+    let weightedSum = 0, weightTotal = 0;
+
+    // Tasks: each /10, collectively weighted 50%
+    const taskVals = (marks.tasks || []).filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
+    if (taskVals.length > 0) {
+      weightedSum += (taskVals.reduce((a, b) => a + b, 0) / (taskVals.length * 10)) * 50;
+      weightTotal += 50;
+    }
+
+    // Vivas: each /10, collectively weighted 20%
+    // Bug NULL-VIVA fix: removed fragile fallback to old marks.viva field since
+    // migrateData() guarantees vivas[] exists. Checking only marks.vivas now.
+    const vivaVals = (marks.vivas || []).filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
+    if (vivaVals.length > 0) {
+      weightedSum += (vivaVals.reduce((a, b) => a + b, 0) / (vivaVals.length * 10)) * 20;
+      weightTotal += 20;
+    }
+
+    // OEL: /10, weighted 15%
+    const oel = normalizeMark(marks.oel, 10);
+    if (oel !== null) {
+      weightedSum += (oel / 10) * 15;
+      weightTotal += 15;
+    }
+
+    // PBL: /10, weighted 15%
+    const pbl = normalizeMark(marks.pbl, 10);
+    if (pbl !== null) {
+      weightedSum += (pbl / 10) * 15;
+      weightTotal += 15;
+    }
+
+    if (weightTotal === 0) return null;
+    // Bug LAB-PCT fix: normalize by weightTotal so partial data doesn't score artificially low.
+    // e.g. if only tasks entered (weightTotal=50), return 100-scale value not raw 0-50 value.
+    return (weightedSum / weightTotal) * 100;
+  }
+
+  // Regular subject calculation
   let weightedSum = 0, weightTotal = 0;
 
-  const quizVals = marks.quizzes.filter(v => v !== null && v !== '' && !isNaN(v));
+  const quizVals = marks.quizzes.filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
   if (quizVals.length > 0) {
-    weightedSum += (quizVals.reduce((a, b) => a + Number(b), 0) / (quizVals.length * 10)) * 15;
+    weightedSum += (quizVals.reduce((a, b) => a + b, 0) / (quizVals.length * 10)) * 15;
     weightTotal += 15;
   }
 
-  const assVals = marks.assignments.filter(v => v !== null && v !== '' && !isNaN(v));
+  const assVals = marks.assignments.filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
   if (assVals.length > 0) {
-    weightedSum += (assVals.reduce((a, b) => a + Number(b), 0) / (assVals.length * 10)) * 10;
+    weightedSum += (assVals.reduce((a, b) => a + b, 0) / (assVals.length * 10)) * 10;
     weightTotal += 10;
   }
 
-  if (marks.pbl !== null && marks.pbl !== '' && !isNaN(marks.pbl)) {
-    weightedSum += (Number(marks.pbl) / 10) * 5;
+  const pbl = normalizeMark(marks.pbl, 10);
+  if (pbl !== null) {
+    weightedSum += (pbl / 10) * 5;
     weightTotal += 5;
   }
 
-  if (marks.mid !== null && marks.mid !== '' && !isNaN(marks.mid)) {
-    weightedSum += (Number(marks.mid) / 25) * 25;
+  const oel = normalizeMark(marks.oel, 10);
+  if (oel !== null) {
+    weightedSum += (oel / 10) * 5;
+    weightTotal += 5;
+  }
+
+  const mid = normalizeMark(marks.mid, 25);
+  if (mid !== null) {
+    weightedSum += (mid / 25) * 25;
     weightTotal += 25;
   }
 
@@ -156,33 +288,40 @@ function calcSubjectPct(marks) {
 function calcAttPctStrict(att) {
   const total = att.present + att.absent + att.late;
   if (total === 0) return null;
-  return (att.present / total) * 100;
+  // Late classes count as attended (present + late) for percentage calculation
+  return ((att.present + att.late) / total) * 100;
 }
 
 /* ─── GPA ─── */
 function calcGPA() {
-  let totalPoints = 0, totalCredits = 0;
+  if (!DATA) return null;
+  let totalPoints = 0, totalCredits = 0, enteredSubjects = 0;
   SUBJECTS.forEach(sub => {
-    const pct = calcSubjectPct(DATA[sub.id].marks);
+    if (!DATA[sub.id]) return; // guard against missing data key
+    const pct = calcSubjectPct(DATA[sub.id].marks, sub);
     if (pct !== null) {
-      const g = pctToGrade(pct);
-      totalPoints  += g.points * sub.credits;
+      enteredSubjects += 1;
       totalCredits += sub.credits;
+      const g = pctToGrade(pct);
+      totalPoints += g.points * sub.credits;
     }
   });
-  if (totalCredits === 0) return null;
+  if (enteredSubjects === 0 || totalCredits === 0) return null;
   return totalPoints / totalCredits;
 }
 
 function calcOverallAtt() {
-  let totalPresent = 0, totalClasses = 0;
+  if (!DATA) return null;
+  let totalAttended = 0, totalClasses = 0;
   SUBJECTS.forEach(sub => {
+    if (!DATA[sub.id]) return; // guard against missing data key
     const att = DATA[sub.id].attendance;
-    totalPresent += att.present;
-    totalClasses += att.present + att.absent + att.late;
+    // Consistent with calcAttPctStrict: late counts as attended
+    totalAttended += att.present + att.late;
+    totalClasses  += att.present + att.absent + att.late;
   });
   if (totalClasses === 0) return null;
-  return (totalPresent / totalClasses) * 100;
+  return (totalAttended / totalClasses) * 100;
 }
 
 function totalCredits() {
@@ -202,6 +341,7 @@ function showToast(msg, duration = 2500) {
 function updateLastUpdatedLabel() {
   const el = document.getElementById('last-updated-label');
   if (!el) return;
+  if (!DATA || !DATA._meta) { el.textContent = 'No data saved yet'; return; }
   const ts = DATA._meta.lastUpdated;
   if (!ts) { el.textContent = 'No data saved yet'; return; }
   const d = new Date(ts);
@@ -211,6 +351,7 @@ function updateLastUpdatedLabel() {
 function updateNavLabel() {
   const el = document.getElementById('nav-semester-label');
   if (!el) return;
+  if (!DATA || !DATA._meta) { el.textContent = 'Student Tracker'; return; }
   const sem = DATA._meta.semester || '';
   const uni = DATA._meta.uni || '';
   el.textContent = [uni, sem].filter(Boolean).join(' · ') || 'Student Tracker';
@@ -219,7 +360,7 @@ function updateNavLabel() {
 /* ─── THEME ─── */
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  DATA._meta.theme = theme;
+  if (DATA && DATA._meta) DATA._meta.theme = theme;
 }
 
 /* ══════════════════════════════════════════════
@@ -229,6 +370,7 @@ let _wizardSetupDone = false;
 
 function showSetup() {
   document.getElementById('setup-overlay').classList.remove('hidden');
+  showStep(1);
   buildCustomSubjectRows(3);
 }
 
@@ -270,16 +412,19 @@ function addCustomSubjectRow() {
 function collectCustomSubjects() {
   const rows = document.querySelectorAll('.custom-subject-row');
   const subjects = [];
-  let valid = true;
   rows.forEach((row, i) => {
     const code    = row.querySelector('.csr-code').value.trim().toUpperCase();
     const name    = row.querySelector('.csr-name').value.trim();
-    const credits = parseInt(row.querySelector('.csr-credits').value) || 3;
-    if (!code || !name) { valid = false; return; }
-    const id = code + '_' + i;
+    const credits = Math.min(20, Math.max(1, parseInt(row.querySelector('.csr-credits').value) || 3));
+    if (!code || !name) {
+      // Skip blank rows
+      return;
+    }
+    // Use stable deterministic ID — no Math.random() to ensure backup/restore consistency
+    const id = `${code}_${i}`;
     subjects.push({ id, code, name, credits });
   });
-  return valid ? subjects : null;
+  return subjects.length > 0 ? subjects : null;
 }
 
 function setupWizard() {
@@ -287,16 +432,17 @@ function setupWizard() {
   _wizardSetupDone = true;
 
   // Step 1 → 2 (with validation)
-  document.getElementById('step1-next').addEventListener('click', () => {
+  document.getElementById('step1-next').onclick = () => {
     const uni = document.getElementById('setup-uni').value.trim();
     const sem = document.getElementById('setup-sem').value.trim();
     if (!uni) { showToast('⚠️ Please enter your university name.'); return; }
     if (!sem) { showToast('⚠️ Please enter your semester.'); return; }
     showStep(2);
-  });
+  };
 
-  // Choice: default
-  document.getElementById('choice-default').addEventListener('click', () => {
+  // Setup wizard handlers are assigned via onclick to ensure that
+  // reset/reinitialization does not stack duplicate listeners.
+  document.getElementById('choice-default').onclick = () => {
     const meta = {
       name:     document.getElementById('setup-name').value.trim(),
       uni:      document.getElementById('setup-uni').value.trim() || 'My University',
@@ -311,19 +457,18 @@ function setupWizard() {
     updateNavLabel();
     renderAll();
     showToast('🎉 Welcome! Default subjects loaded.');
-  });
+  };
 
-  // Choice: custom → step 3
-  document.getElementById('choice-custom').addEventListener('click', () => showStep(3));
+  document.getElementById('choice-custom').onclick = () => showStep(3);
 
   // Step 3: add row
-  document.getElementById('btn-add-subject-row').addEventListener('click', addCustomSubjectRow);
+  document.getElementById('btn-add-subject-row').onclick = addCustomSubjectRow;
 
   // Step 3: back
-  document.getElementById('step3-back').addEventListener('click', () => showStep(2));
+  document.getElementById('step3-back').onclick = () => showStep(2);
 
   // Step 3: done
-  document.getElementById('step3-done').addEventListener('click', () => {
+  document.getElementById('step3-done').onclick = () => {
     const subjects = collectCustomSubjects();
     if (!subjects || subjects.length === 0) {
       showToast('⚠️ Please fill in at least one subject with a code and name.');
@@ -343,7 +488,7 @@ function setupWizard() {
     updateNavLabel();
     renderAll();
     showToast('🚀 All set! Start entering your data.');
-  });
+  };
 }
 
 /* ══════════════════════════════════════════════
@@ -368,13 +513,23 @@ function toggleCard(card) {
 function setupTabs() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
+      // Don't switch tabs while setup wizard is open — DATA may not be ready yet
+      if (!document.getElementById('setup-overlay').classList.contains('hidden')) return;
+
       const page = btn.dataset.page;
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       document.getElementById('page-' + page).classList.add('active');
-      if (page === 'analyze')   renderAnalyze();
-      if (page === 'dashboard' && _dirty) { renderDashboard(); updateDashboardStats(); _dirty = false; }
+      // Always re-render analyze on tab switch so charts/lists are never stale
+      if (page === 'analyze') renderAnalyze();
+      // Bug DASH-STALE fix: also call updateDashboardStats() on tab-switch so the
+      // top stat cards (GPA, attendance) stay current even when renderAll() isn't called.
+      if (page === 'dashboard' && _dirty) {
+        renderDashboard();
+        updateDashboardStats();
+        _dirty = false;
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   });
@@ -384,7 +539,7 @@ function setupTabs() {
    THEME TOGGLE
 ══════════════════════════════════════════════ */
 function setupTheme() {
-  applyTheme(DATA._meta.theme || 'light');
+  applyTheme((DATA && DATA._meta && DATA._meta.theme) ? DATA._meta.theme : 'light');
   document.getElementById('btn-theme').addEventListener('click', () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
     applyTheme(next);
@@ -399,9 +554,11 @@ function setupTheme() {
    format with two sheets: Summary + Raw Data.
 ══════════════════════════════════════════════ */
 function exportAsXLSX() {
-  // We build a proper multi-sheet XLSX from scratch using XML + ZIP.
-  // Colors: dark blue header, alternating rows, conditional grade colors.
-
+  const crcTable = (() => {
+    const t = new Uint32Array(256);
+    for (let i=0;i<256;i++){let v=i;for(let j=0;j<8;j++)v=v&1?(0xEDB88320^(v>>>1)):(v>>>1);t[i]=v;}
+    return t;
+  })();
   const subjects = SUBJECTS;
   const now      = new Date();
   const dateStr  = now.toLocaleDateString();
@@ -409,23 +566,21 @@ function exportAsXLSX() {
   const sem      = DATA._meta.semester || 'Current Semester';
   const name     = DATA._meta.name     || '';
 
-  // ── shared helpers ──
   const safe = v => (v === null || v === undefined || v === '') ? '' : String(v);
   const num  = v => (v === null || v === undefined || v === '') ? null : Number(v);
 
-  // ── build row data ──
   const rows = subjects.map(sub => {
     const d      = DATA[sub.id];
     const m      = d.marks;
     const att    = d.attendance;
-    const pct    = calcSubjectPct(m);
+    const pct    = calcSubjectPct(m, sub);
     const attPct = calcAttPctStrict(att);
     const g      = pctToGrade(pct);
     return {
       code: sub.code, name: sub.name, credits: sub.credits,
       q: m.quizzes.map(v => num(v)),
       a: m.assignments.map(v => num(v)),
-      pbl: num(m.pbl), mid: num(m.mid),
+      pbl: num(m.pbl), oel: num(m.oel), mid: num(m.mid),
       finalObt: num(m.finalObt), finalTotal: num(m.finalTotal),
       marksPct: pct !== null ? parseFloat(pct.toFixed(2)) : null,
       grade: pct !== null ? g.grade : '-',
@@ -436,12 +591,10 @@ function exportAsXLSX() {
 
   const gpa = calcGPA();
 
-  // ── XML builders ──
   function xmlEscape(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // Shared strings table
   const strings = [];
   const strIdx  = {};
   function ss(v) {
@@ -450,17 +603,11 @@ function exportAsXLSX() {
     return strIdx[k];
   }
 
-  // Pre-register all strings
-  const headers1 = ['Code','Subject','Credits','Q1','Q2','Q3','Q4','Q5','Q6','A1','A2','A3','A4','A5','A6','PBL','Mid (/25)','Final Obtained','Final Total','Marks %','Grade','Present','Absent','Late','Attendance %'];
+  const headers1 = ['Code','Subject','Credits','Q1','Q2','Q3','Q4','Q5','Q6','A1','A2','A3','A4','A5','A6','PBL','OEL','Mid (/25)','Final Obtained','Final Total','Marks %','Grade','Present','Absent','Late','Attendance %'];
   headers1.forEach(ss);
   rows.forEach(r => { ss(r.code); ss(r.name); ss(r.grade); });
   [uni, sem, name || 'Student', 'GradeFlow Export', dateStr, 'GPA', 'Subjects', 'Credits', 'Attendance'].forEach(ss);
   ['A (≥90%)','A- (≥85%)','B+ (≥80%)','B (≥75%)','B- (≥70%)','C+ (≥65%)','C (≥60%)','C- (≥55%)','D+ (≥50%)','D (≥45%)','F (<45%)'].forEach(ss);
-
-  // ── Cell format IDs ──
-  // numFmtId: 0=General, 2=0.00, 9=0%, 164=custom
-  // We'll define xf indices:
-  // 0 = default, 1 = header, 2 = subheader, 3 = number 0.00, 4 = percent, 5 = alt row, 6 = grade-green, 7 = grade-amber, 8 = grade-red, 9 = bold center, 10 = meta
 
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -499,9 +646,7 @@ function exportAsXLSX() {
   </cellXfs>
 </styleSheet>`;
 
-  // ── sheet 1: Marks & Data ──
   function col(n) {
-    // convert 1-based col number to letter(s)
     let s = '';
     while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
     return s;
@@ -517,69 +662,68 @@ function exportAsXLSX() {
     return `<c r="${cellRef(r,c)}" s="${style}"><v>${val}</v></c>`;
   }
 
-  // Sheet 1: Raw Data
   let s1rows = '';
-  // Row 1: title
   s1rows += `<row r="1" ht="28" customHeight="1"><c r="A1" t="s" s="9"><v>${ss('GradeFlow Export')}</v></c></row>`;
-  // Row 2: meta
   s1rows += `<row r="2" ht="16"><c r="A2" t="s" s="10"><v>${ss(uni + ' · ' + sem + (name ? ' · ' + name : '') + '   Exported: ' + dateStr)}</v></c></row>`;
-  // Row 3: blank
   s1rows += `<row r="3"/>`;
-  // Row 4: headers
   let hrow = `<row r="4" ht="20">`;
   headers1.forEach((h, i) => { hrow += sCell(4, i+1, ss(h), 1); });
   hrow += `</row>`;
   s1rows += hrow;
 
-  // Data rows
   rows.forEach((r, ri) => {
     const rowNum = ri + 5;
-    const altFill = ri % 2 === 1 ? 5 : 0; // alt row style
+    const altFill = ri % 2 === 1 ? 5 : 0;
     const baseStyle = altFill === 5 ? 5 : 0;
     const numStyle  = 3;
     let drow = `<row r="${rowNum}" ht="18">`;
-    drow += sCell(rowNum, 1, ss(r.code),    1 );  // code - header style (blue bg) repurposed; use center
+    drow += sCell(rowNum, 1, ss(r.code), altFill === 5 ? 5 : 0);
     drow += sCell(rowNum, 2, ss(r.name),    baseStyle);
     drow += nCell(rowNum, 3, r.credits,     8);
     r.q.forEach((v,i)  => { drow += nCell(rowNum, 4+i,  v, numStyle); });
     r.a.forEach((v,i)  => { drow += nCell(rowNum, 10+i, v, numStyle); });
     drow += nCell(rowNum, 16, r.pbl,         numStyle);
-    drow += nCell(rowNum, 17, r.mid,         numStyle);
-    drow += nCell(rowNum, 18, r.finalObt,    numStyle);
-    drow += nCell(rowNum, 19, r.finalTotal,  numStyle);
-    drow += nCell(rowNum, 20, r.marksPct,    3);
-    // Grade cell: green if ≥75, amber 60–74, red <60
+    drow += nCell(rowNum, 17, r.oel,         numStyle);
+    drow += nCell(rowNum, 18, r.mid,         numStyle);
+    drow += nCell(rowNum, 19, r.finalObt,    numStyle);
+    drow += nCell(rowNum, 20, r.finalTotal,  numStyle);
+    drow += nCell(rowNum, 21, r.marksPct,    3);
     const gradeStyle = r.marksPct !== null ? (r.marksPct >= 75 ? 6 : r.marksPct >= 60 ? 7 : 8) : 2;
-    drow += sCell(rowNum, 21, ss(r.grade),  gradeStyle);
-    drow += nCell(rowNum, 22, r.present,    numStyle);
-    drow += nCell(rowNum, 23, r.absent,     numStyle);
-    drow += nCell(rowNum, 24, r.late,       numStyle);
-    drow += nCell(rowNum, 25, r.attPct,     3);
+    drow += sCell(rowNum, 22, ss(r.grade),  gradeStyle);
+    drow += nCell(rowNum, 23, r.present,    numStyle);
+    drow += nCell(rowNum, 24, r.absent,     numStyle);
+    drow += nCell(rowNum, 25, r.late,       numStyle);
+    drow += nCell(rowNum, 26, r.attPct,     3);
     drow += `</row>`;
     s1rows += drow;
   });
 
   const totalRow = rows.length + 5;
-  // Totals row
   s1rows += `<row r="${totalRow}" ht="18">`;
   s1rows += sCell(totalRow, 2, ss('TOTAL / AVERAGE'), 1);
   s1rows += nCell(totalRow, 3, subjects.reduce((a,s)=>a+s.credits,0), 1);
   if (rows.some(r => r.marksPct !== null)) {
-    const avg = rows.filter(r => r.marksPct !== null).reduce((a,r)=>a+r.marksPct,0) / rows.filter(r=>r.marksPct!==null).length;
-    s1rows += nCell(totalRow, 20, parseFloat(avg.toFixed(2)), 1);
+    let totalPoints = 0, totalCredits = 0;
+    rows.forEach(r => {
+      if (r.marksPct !== null) {
+        totalPoints += r.marksPct * r.credits;
+        totalCredits += r.credits;
+      }
+    });
+    const avg = totalCredits > 0 ? totalPoints / totalCredits : null;
+    if (avg !== null) s1rows += nCell(totalRow, 21, parseFloat(avg.toFixed(2)), 1);
   }
-  if (gpa !== null) s1rows += nCell(totalRow, 21, parseFloat(gpa.toFixed(2)), 1);
+  if (gpa !== null) s1rows += nCell(totalRow, 22, parseFloat(gpa.toFixed(2)), 1);
   const totalPres = rows.reduce((a,r)=>a+r.present,0);
   const totalAbs  = rows.reduce((a,r)=>a+r.absent,0);
   const totalLate = rows.reduce((a,r)=>a+r.late,0);
-  s1rows += nCell(totalRow, 22, totalPres, 1);
-  s1rows += nCell(totalRow, 23, totalAbs,  1);
-  s1rows += nCell(totalRow, 24, totalLate, 1);
+  s1rows += nCell(totalRow, 23, totalPres, 1);
+  s1rows += nCell(totalRow, 24, totalAbs,  1);
+  s1rows += nCell(totalRow, 25, totalLate, 1);
   const totClasses = totalPres+totalAbs+totalLate;
-  if (totClasses>0) s1rows += nCell(totalRow, 25, parseFloat((totalPres/totClasses*100).toFixed(2)), 1);
+  if (totClasses>0) s1rows += nCell(totalRow, 26, parseFloat(((totalPres+totalLate)/totClasses*100).toFixed(2)), 1);
   s1rows += `</row>`;
 
-  // col widths
   const colWidths = [
     {min:1,max:1,w:10},{min:2,max:2,w:28},{min:3,max:3,w:9},
     {min:4,max:9,w:7},{min:10,max:15,w:7},
@@ -597,7 +741,6 @@ function exportAsXLSX() {
   <pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>
 </worksheet>`;
 
-  // ── Sheet 2: Summary ──
   const gpaScale = [
     ['A','≥90%','4.0'],['A-','≥85%','3.7'],['B+','≥80%','3.3'],
     ['B','≥75%','3.0'],['B-','≥70%','2.7'],['C+','≥65%','2.3'],
@@ -617,7 +760,6 @@ function exportAsXLSX() {
   const overallAtt = calcOverallAtt();
   s2rows += `<row r="7" ht="18">${sCell(7,1,ss('Attendance'),2)}${nCell(7,2,overallAtt!==null?parseFloat(overallAtt.toFixed(2)):null,2)}</row>`;
   s2rows += `<row r="8"/>`;
-  // Per-subject summary
   s2rows += `<row r="9" ht="20">${['Subject','Marks %','Att %','GPA Points'].map((h,i)=>sCell(9,i+1,ss(h),1)).join('')}</row>`;
   rows.forEach((r,ri) => {
     const rn = 10+ri;
@@ -627,10 +769,9 @@ function exportAsXLSX() {
     s2rows += sCell(rn,1,ss(r.code+' — '+r.name), ri%2===0?0:5);
     s2rows += nCell(rn,2,r.marksPct, gs);
     s2rows += nCell(rn,3,r.attPct, r.attPct!==null?(r.attPct>=75?6:r.attPct>=60?7:8):0);
-    s2rows += nCell(rn,4,r.marksPct!==null?parseFloat(g.points.toFixed(1)):null, 8);
+    s2rows += nCell(rn,4,r.marksPct!==null && g.points!==null?parseFloat(g.points.toFixed(1)):null, 8);
     s2rows += `</row>`;
   });
-  // GPA scale
   const scaleStart = 12 + rows.length;
   s2rows += `<row r="${scaleStart}"/>`;
   s2rows += `<row r="${scaleStart+1}" ht="20">${['Grade','Range','Points'].map((h,i)=>sCell(scaleStart+1,i+1,ss(h),1)).join('')}</row>`;
@@ -649,13 +790,11 @@ function exportAsXLSX() {
   <sheetData>${s2rows}</sheetData>
 </worksheet>`;
 
-  // ── Shared strings XML ──
   const ssXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${strings.length}" uniqueCount="${strings.length}">
 ${strings.map(s=>`<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('\n')}
 </sst>`;
 
-  // ── Workbook XML ──
   const wbXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
@@ -688,11 +827,7 @@ ${strings.map(s=>`<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('\
   <Override PartName="/xl/styles.xml"                ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>`;
 
-  // ── ZIP assembly (using fflate or fallback to JSZip via CDN) ──
-  // We'll use a minimal in-browser ZIP builder
   async function buildZip(files) {
-    // files: { path: string, data: string }[]
-    // Uses CompressionStream if available, else store
     const enc = new TextEncoder();
     const parts = [];
     const central = [];
@@ -700,12 +835,7 @@ ${strings.map(s=>`<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('\
 
     function crc32(buf) {
       let c = 0xFFFFFFFF;
-      const table = crc32.t || (crc32.t = (() => {
-        const t = new Uint32Array(256);
-        for (let i=0;i<256;i++){let v=i;for(let j=0;j<8;j++)v=v&1?(0xEDB88320^(v>>>1)):(v>>>1);t[i]=v;}
-        return t;
-      })());
-      for (const b of buf) c = table[(c^b)&0xFF]^(c>>>8);
+      for (const b of buf) c = crcTable[(c^b)&0xFF]^(c>>>8);
       return (c^0xFFFFFFFF)>>>0;
     }
 
@@ -717,24 +847,22 @@ ${strings.map(s=>`<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('\
       const name    = enc.encode(f.path);
       const crc     = crc32(data);
       const size    = data.length;
-      // local file header
       const lfh = new Uint8Array([
-        0x50,0x4B,0x03,0x04, // sig
-        20,0,                 // version
-        0,0,                  // flags
-        0,0,                  // compression: store
-        0,0,0,0,              // mod time/date
+        0x50,0x4B,0x03,0x04,
+        20,0,
+        0,0,
+        0,0,
+        0,0,0,0,
         ...u32(crc),
         ...u32(size),
         ...u32(size),
         ...u16(name.length),
-        0,0,                  // extra length
+        0,0,
       ]);
       const localEntry = new Uint8Array(lfh.length + name.length + data.length);
       localEntry.set(lfh); localEntry.set(name, lfh.length); localEntry.set(data, lfh.length + name.length);
       parts.push(localEntry);
 
-      // central dir entry
       const cde = new Uint8Array([
         0x50,0x4B,0x01,0x02,
         20,0, 20,0, 0,0, 0,0, 0,0,0,0,
@@ -782,19 +910,35 @@ ${strings.map(s=>`<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('\
     a.download = `GradeFlow_${sem.replace(/\s+/g,'_')}_${now.toISOString().slice(0,10)}.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('📊 Excel file exported!');
   });
 }
 
 
+function exportAsJSON() {
+  if (!DATA) return;
+  const json = JSON.stringify(DATA, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const sem  = (DATA._meta && DATA._meta.semester) ? DATA._meta.semester.replace(/\s+/g, '_') : 'backup';
+  a.href     = url;
+  a.download = `GradeFlow_${sem}_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function setupDataControls() {
 
-  // ── EXPORT AS XLSX ──
   document.getElementById('btn-export').addEventListener('click', () => {
     exportAsXLSX();
+    exportAsJSON();
+    showToast('📦 Excel + JSON backup exported!');
   });
 
-  // ── IMPORT JSON BACKUP ──
+  document.getElementById('btn-import').addEventListener('click', () => {
+    document.getElementById('import-file').click();
+  });
+
   document.getElementById('import-file').addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -802,12 +946,13 @@ function setupDataControls() {
     reader.onload = ev => {
       try {
         const parsed = JSON.parse(ev.target.result);
-        if (!parsed._meta || !parsed._subjects) throw new Error('Invalid GradeFlow backup file.');
-        DATA = parsed;
+        DATA = sanitizeBackup(parsed);
+        migrateData(DATA);
         SUBJECTS = DATA._subjects;
-        // Ensure all subject data exists
         SUBJECTS.forEach(sub => {
           if (!DATA[sub.id]) DATA[sub.id] = defaultSubjectData();
+          if (!DATA[sub.id].marks) DATA[sub.id].marks = defaultSubjectData().marks;
+          if (!DATA[sub.id].attendance) DATA[sub.id].attendance = defaultSubjectData().attendance;
         });
         saveData();
         applyTheme(DATA._meta.theme || 'light');
@@ -822,7 +967,6 @@ function setupDataControls() {
     e.target.value = '';
   });
 
-  // ── RESET ALL ──
   document.getElementById('btn-reset-all').addEventListener('click', () => {
     openResetModal();
   });
@@ -832,12 +976,12 @@ function setupDataControls() {
    RESET MODAL LOGIC
 ══════════════════════════════════════════════ */
 function openResetModal() {
+  if (!DATA || !DATA._meta) return;
   const modal = document.getElementById('reset-modal');
   modal.classList.remove('hidden');
   showResetStep(1);
 
-  // Determine confirmation word: user's name if set, else "RESET"
-  const confirmWord = (DATA._meta.name || '').trim().toUpperCase() || 'RESET';
+  const confirmWord = (DATA && DATA._meta && DATA._meta.name ? DATA._meta.name.trim().toUpperCase() : '') || 'RESET';
   const wordEl = document.getElementById('reset-confirm-word');
   if (wordEl) wordEl.textContent = '"' + confirmWord + '"';
 
@@ -848,16 +992,15 @@ function openResetModal() {
   if (typeHint)  { typeHint.textContent = ''; typeHint.className = 'reset-type-hint'; }
   if (finalBtn)  { finalBtn.disabled = true; }
 
-  // Step 1 → Step 2
   document.getElementById('reset-confirm-1').onclick = () => showResetStep(2);
   document.getElementById('reset-cancel-1').onclick  = closeResetModal;
 
-  // Step 2 → Step 3
   document.getElementById('reset-confirm-2').onclick = () => showResetStep(3);
   document.getElementById('reset-cancel-2').onclick  = closeResetModal;
 
-  // Step 3: typing validation
   if (typeInput) {
+    // Clear any previously assigned handler to prevent stacking closures
+    typeInput.oninput = null;
     typeInput.oninput = () => {
       const val = typeInput.value.trim().toUpperCase();
       if (val === confirmWord) {
@@ -879,11 +1022,17 @@ function openResetModal() {
   document.getElementById('reset-cancel-3').onclick = closeResetModal;
 
   if (finalBtn) {
+    // Clear previous handler to prevent stacking on repeated modal opens
+    finalBtn.onclick = null;
     finalBtn.onclick = () => {
       localStorage.removeItem(STORAGE_KEY);
       DATA = null;
       SUBJECTS = [];
       closeResetModal();
+      // Bug RESET-WIZARD fix: reset the guard flag so setupWizard() can reassign
+      // handlers cleanly on a fresh wizard session after reset.
+      _wizardSetupDone = false;
+      setupWizard();
       showSetup();
       showToast('🗑️ All data erased');
     };
@@ -894,7 +1043,6 @@ function showResetStep(n) {
   document.querySelectorAll('.reset-step').forEach(el => el.classList.remove('active'));
   const step = document.getElementById('reset-step-' + n);
   if (step) step.classList.add('active');
-  // Re-focus input on step 3
   if (n === 3) {
     setTimeout(() => {
       const inp = document.getElementById('reset-type-input');
@@ -910,17 +1058,30 @@ function closeResetModal() {
 /* ══════════════════════════════════════════════
    RENDER ALL
 ══════════════════════════════════════════════ */
-let _dirty = true; // flag: data changed since last full render
+let _dirty = true;
 
 function markDirty() { _dirty = true; }
 
 function renderAll() {
-  _dirty = false;
   updateDashboardStats();
   renderDashboard();
   renderMarks();
   renderAttendance();
+  // Only fully render Analyze if it's the active tab; otherwise mark dirty so it
+  // refreshes on next visit. Always repopulate the calc-subject select so the
+  // calculator is never stale regardless of which tab is active.
+  const analyzePage = document.getElementById('page-analyze');
+  if (analyzePage && analyzePage.classList.contains('active')) {
+    renderAnalyze();
+  } else {
+    // Repopulate subject selector so calculator works after subject changes
+    const calcSubSel = document.getElementById('calc-subject');
+    if (calcSubSel) {
+      calcSubSel.innerHTML = SUBJECTS.map(s => `<option value="${escHtml(s.id)}">${escHtml(s.code)} — ${escHtml(s.name)}</option>`).join('');
+    }
+  }
   updateLastUpdatedLabel();
+  _dirty = false;
 }
 
 /* ══════════════════════════════════════════════
@@ -946,28 +1107,88 @@ function updateDashboardStats() {
 }
 
 function renderDashboard() {
-  updateDashboardStats();
   const grid = document.getElementById('dashboard-cards');
   grid.innerHTML = '';
+  if (!DATA) return;
 
   SUBJECTS.forEach(sub => {
+    if (!DATA[sub.id]) return; // skip if data key missing
     const d      = DATA[sub.id];
-    const pct    = calcSubjectPct(d.marks);
+    const pct    = calcSubjectPct(d.marks, sub);
     const attPct = calcAttPctStrict(d.attendance);
     const g      = pctToGrade(pct);
     const attTot = d.attendance.present + d.attendance.absent + d.attendance.late;
     const attColor = attPct !== null ? (attPct >= 75 ? 'green' : attPct >= 65 ? 'amber' : 'red') : 'grade';
 
+    const isLab = isLabSubject(sub);
+
+    let breakdownRows;
+    if (isLab) {
+      const taskVals = (d.marks.tasks || []).filter(v => v !== null && v !== '');
+      const vivaVals = (d.marks.vivas || []).filter(v => v !== null && v !== '');
+      const taskSummary = taskVals.length
+        ? escHtml(taskVals.map(Number).reduce((a, b) => a + b, 0).toFixed(0) + '/' + (taskVals.length * 10) + ' (' + taskVals.length + ' task' + (taskVals.length !== 1 ? 's' : '') + ')')
+        : '—';
+      const vivaSummary = vivaVals.length
+        ? escHtml(vivaVals.map(Number).reduce((a, b) => a + b, 0).toFixed(0) + '/' + (vivaVals.length * 10) + ' (' + vivaVals.length + ' viva' + (vivaVals.length !== 1 ? 's' : '') + ')')
+        : '—';
+      breakdownRows = `
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Tasks</span>
+            <span class="dash-breakdown-val">${taskSummary}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Viva</span>
+            <span class="dash-breakdown-val">${vivaSummary}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">OEL (15%)</span>
+            <span class="dash-breakdown-val">${d.marks.oel !== null && d.marks.oel !== '' ? Number(d.marks.oel).toFixed(1) + '/10' : '—'}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">PBL (15%)</span>
+            <span class="dash-breakdown-val">${d.marks.pbl !== null && d.marks.pbl !== '' ? Number(d.marks.pbl).toFixed(1) + '/10' : '—'}</span>
+          </div>`;
+    } else {
+      breakdownRows = `
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Quizzes</span>
+            <span class="dash-breakdown-val">${summarizeMarks(d.marks.quizzes, 10)}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Assignments</span>
+            <span class="dash-breakdown-val">${summarizeMarks(d.marks.assignments, 10)}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">PBL (5%)</span>
+            <span class="dash-breakdown-val">${d.marks.pbl !== null && d.marks.pbl !== '' ? Number(d.marks.pbl).toFixed(1) + '/10' : '—'}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">OEL (5%)</span>
+            <span class="dash-breakdown-val">${d.marks.oel !== null && d.marks.oel !== '' ? Number(d.marks.oel).toFixed(1) + '/10' : '—'}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Mid Exam</span>
+            <span class="dash-breakdown-val">${d.marks.mid !== null && d.marks.mid !== '' ? Number(d.marks.mid).toFixed(1) + '/25' : '—'}</span>
+          </div>
+          <div class="dash-breakdown-row">
+            <span class="dash-breakdown-label">Final Exam</span>
+            <span class="dash-breakdown-val">${d.marks.finalObt !== null && d.marks.finalTotal !== null && d.marks.finalObt !== '' && d.marks.finalTotal !== '' ? Number(d.marks.finalObt).toFixed(0) + '/' + Number(d.marks.finalTotal).toFixed(0) : '—'}</span>
+          </div>`;
+    }
+
     const card = document.createElement('div');
     card.className  = 'subject-card';
     card.dataset.id = sub.id;
 
+    // Bug ESC-DASH fix: escape sub.code, sub.name, sub.credits before innerHTML interpolation
+    // to prevent XSS from custom subject names entered in the setup wizard.
     card.innerHTML = `
       <div class="card-header" role="button" aria-expanded="false" tabindex="0">
-        <span class="card-code">${sub.code}</span>
-        <span class="card-name">${sub.name}<small>${sub.credits} credit${sub.credits !== 1 ? 's' : ''}</small></span>
+        <span class="card-code">${escHtml(sub.code)}</span>
+        <span class="card-name">${escHtml(sub.name)}<small>${escHtml(String(sub.credits))} credit${sub.credits !== 1 ? 's' : ''}</small></span>
         <span class="card-badges">
-          <span class="badge ${pct !== null ? badgeClass(pct) : 'badge-grade'}">${g.grade}</span>
+          <span class="badge ${pct !== null ? badgeClass(pct) : 'badge-grade'}">${escHtml(g.grade)}</span>
           <span class="badge ${attPct !== null ? 'badge-' + attColor : 'badge-grade'}">
             ${attPct !== null ? attPct.toFixed(0) + '%' : 'Att'}
           </span>
@@ -982,26 +1203,7 @@ function renderDashboard() {
             <span class="dash-breakdown-label">Overall Marks</span>
             <span class="dash-breakdown-val ${pct !== null ? gradeColor(pct) : ''}">${pct !== null ? pct.toFixed(1) + '%' : '—'}</span>
           </div>
-          <div class="dash-breakdown-row">
-            <span class="dash-breakdown-label">Quizzes</span>
-            <span class="dash-breakdown-val">${summarizeMarks(d.marks.quizzes, 10)}</span>
-          </div>
-          <div class="dash-breakdown-row">
-            <span class="dash-breakdown-label">Assignments</span>
-            <span class="dash-breakdown-val">${summarizeMarks(d.marks.assignments, 10)}</span>
-          </div>
-          <div class="dash-breakdown-row">
-            <span class="dash-breakdown-label">PBL</span>
-            <span class="dash-breakdown-val">${d.marks.pbl !== null && d.marks.pbl !== '' ? Number(d.marks.pbl).toFixed(1) + '/10' : '—'}</span>
-          </div>
-          <div class="dash-breakdown-row">
-            <span class="dash-breakdown-label">Mid Exam</span>
-            <span class="dash-breakdown-val">${d.marks.mid !== null && d.marks.mid !== '' ? Number(d.marks.mid).toFixed(1) + '/25' : '—'}</span>
-          </div>
-          <div class="dash-breakdown-row">
-            <span class="dash-breakdown-label">Final Exam</span>
-            <span class="dash-breakdown-val">${d.marks.finalObt !== null && d.marks.finalTotal !== null && d.marks.finalObt !== '' && d.marks.finalTotal !== '' ? Number(d.marks.finalObt).toFixed(0) + '/' + Number(d.marks.finalTotal).toFixed(0) : '—'}</span>
-          </div>
+          ${breakdownRows}
           <div class="dash-breakdown-row">
             <span class="dash-breakdown-label">Attendance</span>
             <span class="dash-breakdown-val ${attPct !== null ? attColor : ''}">${attTot > 0 ? d.attendance.present + 'P / ' + d.attendance.absent + 'A / ' + d.attendance.late + 'L' : '—'}</span>
@@ -1016,10 +1218,37 @@ function renderDashboard() {
 }
 
 function summarizeMarks(arr, max) {
-  const vals = arr.filter(v => v !== null && v !== '' && !isNaN(v));
+  const vals = arr.filter(v => v !== null && v !== '' && Number.isFinite(Number(v)));
   if (!vals.length) return '—';
   const sum = vals.reduce((a, b) => a + Number(b), 0);
   return `${sum.toFixed(0)}/${vals.length * max} (${vals.length}/${arr.length})`;
+}
+
+/* ─── DATA MIGRATION ─── */
+function migrateData(data) {
+  const subjects = data._subjects || [];
+  subjects.forEach(sub => {
+    const d = data[sub.id];
+    if (!d || !d.marks) return;
+    if (!d.marks.tasks) d.marks.tasks = [];
+    if (!Array.isArray(d.marks.vivas)) {
+      // Migrate old scalar viva → vivas[] for lab subjects
+      if (isLabSubject(sub) && d.marks.viva !== null && d.marks.viva !== undefined && d.marks.viva !== '') {
+        d.marks.vivas = [d.marks.viva];
+      } else {
+        // Discard stale viva field for non-lab subjects — warn so data loss is visible
+        if (d.marks.viva !== null && d.marks.viva !== undefined && d.marks.viva !== '') {
+          console.warn(`GradeFlow: discarding legacy viva value (${d.marks.viva}) for non-lab subject "${sub.code}" during migration.`);
+        }
+        d.marks.vivas = [];
+      }
+      delete d.marks.viva;
+    } else if ('viva' in d.marks) {
+      // vivas[] already exists but stale viva key is still present — clean it up
+      delete d.marks.viva;
+    }
+    if (d.marks.classAvg === undefined) d.marks.classAvg = null;
+  });
 }
 
 /* ══════════════════════════════════════════════
@@ -1028,35 +1257,99 @@ function summarizeMarks(arr, max) {
 function renderMarks() {
   const container = document.getElementById('marks-cards');
   container.innerHTML = '';
+  if (!DATA) return;
 
   SUBJECTS.forEach(sub => {
+    if (!DATA[sub.id]) return; // skip if data key missing
     const d   = DATA[sub.id];
-    const pct = calcSubjectPct(d.marks);
+    const pct = calcSubjectPct(d.marks, sub);
     const g   = pctToGrade(pct);
 
     const card = document.createElement('div');
     card.className  = 'subject-card';
     card.dataset.id = sub.id;
 
-    card.innerHTML = `
+    const isLab = isLabSubject(sub);
+
+    // Bug ESC-DASH fix: escape sub.code and sub.name in card headers here too.
+    const cardHeaderHtml = `
       <div class="card-header" role="button" aria-expanded="false" tabindex="0">
-        <span class="card-code">${sub.code}</span>
-        <span class="card-name">${sub.name}<small>${sub.credits} credit${sub.credits !== 1 ? 's' : ''}</small></span>
+        <span class="card-code">${escHtml(sub.code)}</span>
+        <span class="card-name">${escHtml(sub.name)}<small>${escHtml(String(sub.credits))} credit${sub.credits !== 1 ? 's' : ''}</small></span>
         <span class="card-badges">
           <span class="badge ${pct !== null ? badgeClass(pct) : 'badge-grade'}" id="marks-badge-${sub.id}">
-            ${g.grade}${pct !== null ? ' · ' + pct.toFixed(1) + '%' : ''}
+            ${escHtml(g.grade)}${pct !== null ? ' · ' + pct.toFixed(1) + '%' : ''}
           </span>
         </span>
         <span class="card-chevron">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
         </span>
+      </div>`;
+
+    const savedClassAvg = d.marks.classAvg !== undefined && d.marks.classAvg !== null ? d.marks.classAvg : '';
+    const classAvgGrade = (savedClassAvg !== '' && !isNaN(savedClassAvg)) ? pctToGrade(Number(savedClassAvg)) : null;
+    const totalBarHtml = `
+      <div class="card-total-bar" id="marks-total-bar-${sub.id}">
+        <span class="card-total-label">Subject Total</span>
+        <span class="card-total-value" id="marks-total-val-${sub.id}">${pct !== null ? pct.toFixed(1) + '%' : '—'}</span>
+        <span class="card-total-grade ${pct !== null ? gradeColor(pct) : ''}" id="marks-total-grade-${sub.id}">${escHtml(g.grade)}</span>
       </div>
-      <div class="card-body">
-        <div class="card-total-bar" id="marks-total-bar-${sub.id}">
-          <span class="card-total-label">Subject Total</span>
-          <span class="card-total-value" id="marks-total-val-${sub.id}">${pct !== null ? pct.toFixed(1) + '%' : '—'}</span>
-          <span class="card-total-grade ${pct !== null ? gradeColor(pct) : ''}" id="marks-total-grade-${sub.id}">${g.grade}</span>
+      <div class="class-avg-block">
+        <label class="class-avg-label" for="class-avg-${sub.id}">Class Average (%)</label>
+        <div class="class-avg-row">
+          <input type="number" class="marks-input class-avg-input" id="class-avg-${sub.id}"
+            value="${savedClassAvg}" placeholder="e.g. 68" min="0" max="100" step="0.1"
+            data-subid="${sub.id}" data-field="classAvg" />
+          <span class="class-avg-result" id="class-avg-result-${sub.id}">${classAvgGrade ? classAvgGrade.grade + ' · ' + Number(savedClassAvg).toFixed(1) + '%' : '—'}</span>
+          <span class="class-avg-gpa" id="class-avg-gpa-${sub.id}">${classAvgGrade && classAvgGrade.points !== null ? 'GPA ' + classAvgGrade.points.toFixed(1) : ''}</span>
         </div>
+      </div>`;
+
+    const resetBtn = `
+      <button class="btn-card-reset" data-subid="${sub.id}" data-page="marks">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+        Reset Marks
+      </button>`;
+
+    let bodyHtml;
+
+    if (isLab) {
+      const tasksHtml = d.marks.tasks.map((v, i) =>
+        buildMarkInput(sub.id, 'task', i, v, 10, `T${i+1}`)
+      ).join('');
+
+      const vivasHtml = d.marks.vivas.map((v, i) =>
+        buildMarkInput(sub.id, 'viva', i, v, 10, `V${i+1}`)
+      ).join('');
+
+      bodyHtml = `
+        ${totalBarHtml}
+        <div class="marks-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>Tasks (each /10)</span>
+          <button class="btn-lab-add-task" data-subid="${sub.id}" style="font-size:0.75rem;padding:2px 10px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-weight:600;">+ Add Task</button>
+        </div>
+        <div class="marks-grid lab-tasks-grid" id="lab-tasks-grid-${sub.id}">
+          ${tasksHtml || '<div class="empty-msg">No tasks yet — tap "+ Add Task" to add one.</div>'}
+        </div>
+
+        <div class="marks-section-title" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>Viva (each /10)</span>
+          <button class="btn-lab-add-viva" data-subid="${sub.id}" style="font-size:0.75rem;padding:2px 10px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-weight:600;">+ Add Viva</button>
+        </div>
+        <div class="marks-grid lab-vivas-grid" id="lab-vivas-grid-${sub.id}">
+          ${vivasHtml || '<div class="empty-msg">No viva yet — tap "+ Add Viva" to add one.</div>'}
+        </div>
+
+        <div class="marks-section-title">OEL (/10) <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);">optional</span></div>
+        <div class="marks-grid-2">${buildMarkInput(sub.id, 'oel', 0, d.marks.oel, 10, 'OEL')}</div>
+
+        <div class="marks-section-title">PBL (/10) <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);">optional</span></div>
+        <div class="marks-grid-2">${buildMarkInput(sub.id, 'pbl', 0, d.marks.pbl, 10, 'PBL')}</div>
+
+        ${resetBtn}`;
+    } else {
+      bodyHtml = `
+        ${totalBarHtml}
 
         <div class="marks-section-title">Quizzes (each /10)</div>
         <div class="marks-grid">
@@ -1071,6 +1364,9 @@ function renderMarks() {
         <div class="marks-section-title">PBL (/10)</div>
         <div class="marks-grid-2">${buildMarkInput(sub.id, 'pbl', 0, d.marks.pbl, 10, 'PBL')}</div>
 
+        <div class="marks-section-title">OEL (/10)</div>
+        <div class="marks-grid-2">${buildMarkInput(sub.id, 'oel', 0, d.marks.oel, 10, 'OEL')}</div>
+
         <div class="marks-section-title">Mid Exam (/25)</div>
         <div class="marks-grid-2">${buildMarkInput(sub.id, 'mid', 0, d.marks.mid, 25, 'Mid')}</div>
 
@@ -1081,7 +1377,7 @@ function renderMarks() {
             <input type="number" class="marks-input"
               id="marks-${sub.id}-finalObt"
               value="${d.marks.finalObt !== null ? d.marks.finalObt : ''}"
-              placeholder="e.g. 38" min="0"
+              placeholder="e.g. 38" min="0" ${d.marks.finalTotal ? `max="${Number(d.marks.finalTotal)}"` : ''} step="0.01"
               data-subid="${sub.id}" data-field="finalObt" />
             <div class="marks-live-pct" id="marks-pct-${sub.id}-finalObt"></div>
           </div>
@@ -1090,18 +1386,16 @@ function renderMarks() {
             <input type="number" class="marks-input"
               id="marks-${sub.id}-finalTotal"
               value="${d.marks.finalTotal !== null ? d.marks.finalTotal : ''}"
-              placeholder="e.g. 50" min="1"
+              placeholder="e.g. 50" min="1" step="0.01"
               data-subid="${sub.id}" data-field="finalTotal" />
             <div class="marks-live-pct" id="marks-pct-${sub.id}-finalTotal"></div>
           </div>
         </div>
 
-        <button class="btn-card-reset" data-subid="${sub.id}" data-page="marks">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
-          Reset Marks
-        </button>
-      </div>
-    `;
+        ${resetBtn}`;
+    }
+
+    card.innerHTML = cardHeaderHtml + `<div class="card-body">${bodyHtml}</div>`;
 
     attachCardToggle(card);
     container.appendChild(card);
@@ -1112,52 +1406,72 @@ function renderMarks() {
 }
 
 function buildMarkInput(subId, type, idx, val, max, label) {
-  const fieldKey = type === 'quiz' ? `quiz-${idx}` : type === 'assign' ? `assign-${idx}` : type === 'pbl' ? 'pbl' : 'mid';
+  const fieldKey = type === 'quiz'   ? `quiz-${idx}`
+                 : type === 'assign' ? `assign-${idx}`
+                 : type === 'task'   ? `task-${idx}`
+                 : type === 'viva'   ? `viva-${idx}`
+                 : type === 'pbl'    ? 'pbl'
+                 : type === 'oel'    ? 'oel'
+                 : 'mid';
   const inputId  = `marks-${subId}-${fieldKey}`;
   const pctId    = `marks-pct-${subId}-${fieldKey}`;
-  const pctText  = (val !== null && val !== '' && !isNaN(val)) ? ((Number(val) / max) * 100).toFixed(0) + '%' : '';
+  const pctText  = (val !== null && val !== '' && !isNaN(val)) ? ((Number(val) / max) * 100).toFixed(1) + '%' : '';
   const hasVal   = (val !== null && val !== '');
 
+  const removeBtn = (type === 'task')
+    ? `<button class="btn-lab-remove-task" data-subid="${subId}" data-idx="${idx}" title="Remove task" style="margin-left:4px;background:none;border:none;color:var(--red);cursor:pointer;font-size:0.9rem;line-height:1;padding:0 2px;">×</button>`
+    : (type === 'viva')
+    ? `<button class="btn-lab-remove-viva" data-subid="${subId}" data-idx="${idx}" title="Remove viva" style="margin-left:4px;background:none;border:none;color:var(--red);cursor:pointer;font-size:0.9rem;line-height:1;padding:0 2px;">×</button>`
+    : '';
+
   return `
-    <div class="marks-input-group">
-      <label class="marks-label" for="${inputId}">${label}</label>
+    <div class="marks-input-group" ${type === 'task' ? `id="lab-task-group-${subId}-${idx}"` : type === 'viva' ? `id="lab-viva-group-${subId}-${idx}"` : ''}>
+      <label class="marks-label" for="${inputId}">${label}${removeBtn}</label>
       <input type="number" class="marks-input${hasVal ? ' has-val' : ''}"
         id="${inputId}" value="${val !== null ? val : ''}"
-        placeholder="0–${max}" min="0" max="${max}"
+        placeholder="0–${max}" min="0" max="${max}" step="0.01"
         data-subid="${subId}" data-type="${type}" data-idx="${idx}" data-max="${max}" />
       <div class="marks-live-pct${pctText ? (' ' + pctColor(val, max)) : ''}" id="${pctId}">${pctText}</div>
     </div>`;
 }
 
 function pctColor(val, max) {
-  if (!val && val !== 0) return '';
+  if (val === null || val === undefined || val === '' || isNaN(val)) return '';
   const p = (Number(val) / max) * 100;
   return p >= 75 ? 'good' : p >= 60 ? 'warn' : 'danger';
 }
 
 function attachMarksListeners() {
   document.querySelectorAll('#marks-cards .marks-input[data-type]').forEach(inp => {
+    const type = inp.dataset.type;
+    if (type === 'task' || type === 'viva') return;
+
     inp.addEventListener('input', () => {
       const subId = inp.dataset.subid;
-      const type  = inp.dataset.type;
       const idx   = parseInt(inp.dataset.idx);
       const max   = parseInt(inp.dataset.max);
-      const val   = inp.value.trim() === '' ? null : Math.min(Number(inp.value), max);
+      let rawVal  = inp.value.trim() === '' ? null : parseFloat(inp.value);
+      const val   = rawVal === null ? null : Math.max(0, Math.min(rawVal, max));
       if (val !== null && inp.value.trim() !== '') inp.value = val;
 
       const d = DATA[subId].marks;
       if (type === 'quiz')        d.quizzes[idx] = val;
       else if (type === 'assign') d.assignments[idx] = val;
       else if (type === 'pbl')    d.pbl = val;
+      else if (type === 'oel')    d.oel = val;
       else if (type === 'mid')    d.mid = val;
 
       inp.classList.toggle('has-val', val !== null);
 
-      const fieldKey = type === 'quiz' ? `quiz-${idx}` : type === 'assign' ? `assign-${idx}` : type === 'pbl' ? 'pbl' : 'mid';
+      const fieldKey = type === 'quiz'   ? `quiz-${idx}`
+                     : type === 'assign' ? `assign-${idx}`
+                     : type === 'pbl'    ? 'pbl'
+                     : type === 'oel'    ? 'oel'
+                     : 'mid';
       const pctEl = document.getElementById(`marks-pct-${subId}-${fieldKey}`);
       if (pctEl) {
         if (val !== null) {
-          pctEl.textContent = ((val / max) * 100).toFixed(0) + '%';
+          pctEl.textContent = ((val / max) * 100).toFixed(1) + '%';
           pctEl.className   = 'marks-live-pct ' + pctColor(val, max);
         } else {
           pctEl.textContent = '';
@@ -1167,26 +1481,135 @@ function attachMarksListeners() {
 
       saveData();
       updateSubjectMarksBadge(subId);
+
+      // Bug DASH-STALE fix: update dashboard if it's the active tab
+      if (document.getElementById('page-dashboard').classList.contains('active')) {
+        renderDashboard();
+        updateDashboardStats();
+      }
     });
+  });
+
+  // ── Add Task button (labs) ──
+  document.querySelectorAll('.btn-lab-add-task').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const subId = btn.dataset.subid;
+      const d = DATA[subId].marks;
+      if (!d.tasks) d.tasks = [];
+      d.tasks.push(null);
+      saveData();
+      const grid = document.getElementById(`lab-tasks-grid-${subId}`);
+      if (grid) {
+        grid.innerHTML = d.tasks.map((v, i) => buildMarkInput(subId, 'task', i, v, 10, `T${i+1}`)).join('');
+        grid.querySelectorAll('.marks-input[data-type]').forEach(inp => attachSingleMarkInput(inp));
+        grid.querySelectorAll('.btn-lab-remove-task').forEach(rb => attachRemoveTaskBtn(rb));
+      }
+    });
+  });
+
+  // ── Add Viva button (labs) ──
+  document.querySelectorAll('.btn-lab-add-viva').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const subId = btn.dataset.subid;
+      const d = DATA[subId].marks;
+      if (!d.vivas) d.vivas = [];
+      d.vivas.push(null);
+      saveData();
+      const grid = document.getElementById(`lab-vivas-grid-${subId}`);
+      if (grid) {
+        grid.innerHTML = d.vivas.map((v, i) => buildMarkInput(subId, 'viva', i, v, 10, `V${i+1}`)).join('');
+        grid.querySelectorAll('.marks-input[data-type]').forEach(inp => attachSingleMarkInput(inp));
+        grid.querySelectorAll('.btn-lab-remove-viva').forEach(rb => attachRemoveVivaBtn(rb));
+      }
+    });
+  });
+
+  // ── Remove Task button (labs) ──
+  document.querySelectorAll('.btn-lab-remove-task').forEach(btn => {
+    attachRemoveTaskBtn(btn);
+  });
+
+  // ── Remove Viva button (labs) ──
+  document.querySelectorAll('.btn-lab-remove-viva').forEach(btn => {
+    attachRemoveVivaBtn(btn);
+  });
+
+  document.querySelectorAll('#marks-cards .marks-input[data-type="task"], #marks-cards .marks-input[data-type="viva"]').forEach(inp => {
+    attachSingleMarkInput(inp);
   });
 
   document.querySelectorAll('#marks-cards .marks-input[data-field]').forEach(inp => {
     inp.addEventListener('input', () => {
       const subId = inp.dataset.subid;
       const field = inp.dataset.field;
-      const val   = inp.value.trim() === '' ? null : Number(inp.value);
+      const parsed = Number(inp.value);
+      const val    = inp.value.trim() === '' ? null : (Number.isFinite(parsed) ? parsed : null);
+      if (!Number.isFinite(parsed) && inp.value.trim() !== '') inp.value = '';
       DATA[subId].marks[field] = val;
+
+      // Bug 19 fix: clamp finalObt to finalTotal if finalObt > finalTotal
+      if (field === 'finalObt' || field === 'finalTotal') {
+        const d = DATA[subId].marks;
+        const obtInput = document.getElementById(`marks-${subId}-finalObt`);
+        if (field === 'finalTotal') {
+          if (d.finalTotal !== null && obtInput) {
+            obtInput.max = d.finalTotal;
+          } else if (obtInput) {
+            obtInput.removeAttribute('max');
+          }
+          if (d.finalTotal !== null && d.finalObt !== null && d.finalObt > d.finalTotal) {
+            d.finalObt = d.finalTotal;
+            DATA[subId].marks.finalObt = d.finalTotal;
+            if (obtInput) obtInput.value = d.finalTotal;
+            showToast('⚠️ Obtained marks clamped to total marks');
+          }
+        }
+        if (field === 'finalObt' && d.finalTotal !== null && d.finalObt !== null && d.finalObt > d.finalTotal) {
+          d.finalObt = d.finalTotal;
+          DATA[subId].marks.finalObt = d.finalTotal;
+          if (obtInput) obtInput.value = d.finalTotal;
+          showToast('⚠️ Obtained marks clamped to total marks');
+        }
+      }
+
       saveData();
       updateSubjectMarksBadge(subId);
+
+      // Bug DASH-STALE fix: update dashboard if it's the active tab
+      if (document.getElementById('page-dashboard').classList.contains('active')) {
+        renderDashboard();
+        updateDashboardStats();
+      }
+
+      // Bug PP fix: update live percentage for BOTH finalObt and finalTotal fields.
+      // Previously only updated when field === 'finalObt', leaving the % stale when
+      // the user changed the Total field.
       const pctEl = document.getElementById(`marks-pct-${subId}-${field}`);
       if (pctEl) {
         const d = DATA[subId].marks;
-        if (d.finalObt !== null && d.finalTotal !== null && d.finalTotal > 0 && field === 'finalObt') {
+        if (
+          d.finalObt !== null && d.finalTotal !== null &&
+          d.finalTotal > 0 &&
+          (field === 'finalObt' || field === 'finalTotal')
+        ) {
           pctEl.textContent = ((d.finalObt / d.finalTotal) * 100).toFixed(0) + '%';
           pctEl.className   = 'marks-live-pct ' + pctColor(d.finalObt, d.finalTotal);
         } else {
           pctEl.textContent = '';
           pctEl.className   = 'marks-live-pct';
+        }
+      }
+
+      if (field === 'classAvg') {
+        const resultEl = document.getElementById(`class-avg-result-${subId}`);
+        const gpaEl    = document.getElementById(`class-avg-gpa-${subId}`);
+        if (val !== null && !isNaN(val)) {
+          const cg = pctToGrade(val);
+          if (resultEl) resultEl.textContent = cg.grade + ' · ' + Number(val).toFixed(1) + '%';
+          if (gpaEl)    gpaEl.textContent    = cg.points !== null ? 'GPA ' + cg.points.toFixed(1) : '';
+        } else {
+          if (resultEl) resultEl.textContent = '—';
+          if (gpaEl)    gpaEl.textContent    = '';
         }
       }
     });
@@ -1200,23 +1623,118 @@ function attachMarksListeners() {
       DATA[subId].marks = defaultSubjectData().marks;
       saveData();
       renderMarks();
-      showToast(`🗑️ Marks cleared for ${sub.code}. Tap to undo.`, 4000);
-      // Undo on toast tap
       const toast = document.getElementById('toast');
+      clearTimeout(toast._timeout);
+      const freshToast = toast.cloneNode(true);
+      freshToast.id = 'toast';
+      toast.parentNode.replaceChild(freshToast, toast);
+      showToast(`🗑️ Marks cleared for ${sub.code}. Tap to undo.`, 4000);
+      const currentToast = document.getElementById('toast');
       const undoFn = () => {
         DATA[subId].marks = backup;
         saveData();
         renderMarks();
         showToast(`↩️ Undo successful for ${sub.code}`);
-        toast.removeEventListener('click', undoFn);
+        currentToast.removeEventListener('click', undoFn);
       };
-      toast.addEventListener('click', undoFn);
+      currentToast.addEventListener('click', undoFn);
     });
   });
 }
 
+function attachSingleMarkInput(inp) {
+  inp.addEventListener('input', () => {
+    const subId = inp.dataset.subid;
+    const type  = inp.dataset.type;
+    const idx   = parseInt(inp.dataset.idx);
+    const max   = parseInt(inp.dataset.max);
+    let rawVal  = inp.value.trim() === '' ? null : parseFloat(inp.value);
+    const val   = rawVal === null ? null : Math.max(0, Math.min(rawVal, max));
+    if (val !== null && inp.value.trim() !== '') inp.value = val;
+
+    const d = DATA[subId].marks;
+    if (type === 'task')      { if (!d.tasks) d.tasks = []; d.tasks[idx] = val; }
+    else if (type === 'viva') { if (!d.vivas) d.vivas = []; d.vivas[idx] = val; }
+
+    inp.classList.toggle('has-val', val !== null);
+
+    const fieldKey = type === 'task' ? `task-${idx}` : `viva-${idx}`;
+    const pctEl = document.getElementById(`marks-pct-${subId}-${fieldKey}`);
+    if (pctEl) {
+      if (val !== null) {
+        pctEl.textContent = ((val / max) * 100).toFixed(1) + '%';
+        pctEl.className   = 'marks-live-pct ' + pctColor(val, max);
+      } else {
+        pctEl.textContent = '';
+        pctEl.className   = 'marks-live-pct';
+      }
+    }
+    saveData();
+    updateSubjectMarksBadge(subId);
+
+    // Bug DASH-STALE fix: update dashboard if it's the active tab
+    if (document.getElementById('page-dashboard').classList.contains('active')) {
+      renderDashboard();
+      updateDashboardStats();
+    }
+  });
+}
+
+function attachRemoveTaskBtn(btn) {
+  btn.addEventListener('click', () => {
+    const subId = btn.dataset.subid;
+    const idx   = parseInt(btn.dataset.idx);
+    const d = DATA[subId].marks;
+    if (!d.tasks) return;
+    d.tasks.splice(idx, 1);
+    saveData();
+    updateSubjectMarksBadge(subId);
+
+    // Bug DASH-STALE fix: update dashboard if it's the active tab
+    if (document.getElementById('page-dashboard').classList.contains('active')) {
+      renderDashboard();
+      updateDashboardStats();
+    }
+    const grid = document.getElementById(`lab-tasks-grid-${subId}`);
+    if (grid) {
+      grid.innerHTML = d.tasks.length
+        ? d.tasks.map((v, i) => buildMarkInput(subId, 'task', i, v, 10, `T${i+1}`)).join('')
+        : '<div class="empty-msg" style="font-size:0.8rem;color:var(--text-muted);padding:4px 0;">No tasks yet — tap "+ Add Task" to add one.</div>';
+      grid.querySelectorAll('.marks-input[data-type]').forEach(inp => attachSingleMarkInput(inp));
+      grid.querySelectorAll('.btn-lab-remove-task').forEach(rb => attachRemoveTaskBtn(rb));
+    }
+  });
+}
+
+function attachRemoveVivaBtn(btn) {
+  btn.addEventListener('click', () => {
+    const subId = btn.dataset.subid;
+    const idx   = parseInt(btn.dataset.idx);
+    const d = DATA[subId].marks;
+    if (!d.vivas) return;
+    d.vivas.splice(idx, 1);
+    saveData();
+    updateSubjectMarksBadge(subId);
+
+    // Bug DASH-STALE fix: update dashboard if it's the active tab
+    if (document.getElementById('page-dashboard').classList.contains('active')) {
+      renderDashboard();
+      updateDashboardStats();
+    }
+    const grid = document.getElementById(`lab-vivas-grid-${subId}`);
+    if (grid) {
+      grid.innerHTML = d.vivas.length
+        ? d.vivas.map((v, i) => buildMarkInput(subId, 'viva', i, v, 10, `V${i+1}`)).join('')
+        : '<div class="empty-msg" style="font-size:0.8rem;color:var(--text-muted);padding:4px 0;">No viva yet — tap "+ Add Viva" to add one.</div>';
+      grid.querySelectorAll('.marks-input[data-type]').forEach(inp => attachSingleMarkInput(inp));
+      grid.querySelectorAll('.btn-lab-remove-viva').forEach(rb => attachRemoveVivaBtn(rb));
+    }
+  });
+}
+
 function updateSubjectMarksBadge(subId) {
-  const pct = calcSubjectPct(DATA[subId].marks);
+  const sub = SUBJECTS.find(s => s.id === subId);
+  const pct = calcSubjectPct(DATA[subId].marks, sub);
   const g   = pctToGrade(pct);
   const badge = document.getElementById(`marks-badge-${subId}`);
   if (badge) {
@@ -1242,23 +1760,26 @@ function updateAllMarksBadges() {
 function renderAttendance() {
   const container = document.getElementById('attendance-cards');
   container.innerHTML = '';
+  if (!DATA) return;
 
   SUBJECTS.forEach(sub => {
+    if (!DATA[sub.id]) return; // skip if data key missing
     const d        = DATA[sub.id];
     const att      = d.attendance;
     const total    = att.present + att.absent + att.late;
     const pct      = calcAttPctStrict(att);
     const attColor = pct !== null ? (pct >= 75 ? 'green' : pct >= 65 ? 'amber' : 'red') : '';
-    const barClass = attColor === 'green' ? '' : attColor === 'amber' ? 'warn' : 'danger';
+    const barClass = pct === null ? '' : attColor === 'green' ? 'safe' : attColor === 'amber' ? 'warn' : 'danger';
 
     const card = document.createElement('div');
     card.className  = 'subject-card';
     card.dataset.id = sub.id;
 
+    // Bug ESC-DASH fix: escape sub.code and sub.name in attendance card headers too.
     card.innerHTML = `
       <div class="card-header" role="button" aria-expanded="false" tabindex="0">
-        <span class="card-code">${sub.code}</span>
-        <span class="card-name">${sub.name}<small>${sub.credits} credit${sub.credits !== 1 ? 's' : ''}</small></span>
+        <span class="card-code">${escHtml(sub.code)}</span>
+        <span class="card-name">${escHtml(sub.name)}<small>${escHtml(String(sub.credits))} credit${sub.credits !== 1 ? 's' : ''}</small></span>
         <span class="card-badges">
           <span class="badge ${attBadgeClass(pct)}" id="att-badge-${sub.id}">
             ${pct !== null ? pct.toFixed(0) + '%' : '—'}
@@ -1293,7 +1814,7 @@ function renderAttendance() {
           </div>
         </div>
         <div class="att-pct-bar-wrap">
-          <div class="att-pct-bar ${barClass}" id="att-bar-${sub.id}" style="width:${pct !== null ? Math.min(pct,100).toFixed(1) : 0}%"></div>
+          <div class="att-pct-bar${barClass ? ' ' + barClass : ''}" id="att-bar-${sub.id}" style="width:${pct !== null ? Math.min(pct,100).toFixed(1) : 0}%"></div>
         </div>
         <div class="att-pct-text" id="att-pct-text-${sub.id}">
           ${pct !== null ? pct.toFixed(1) + '% attendance' : 'No classes logged yet'}
@@ -1339,28 +1860,53 @@ function attachAttendanceListeners() {
       DATA[subId].attendance[action]++;
       saveData();
       updateAttCard(subId);
-      showToast(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} logged for ${subId}`);
+
+      // Bug DASH-STALE fix: update dashboard if it's the active tab
+      if (document.getElementById('page-dashboard').classList.contains('active')) {
+        renderDashboard();
+        updateDashboardStats();
+      }
+      const sub = SUBJECTS.find(s => s.id === subId);
+      showToast(`✅ ${action.charAt(0).toUpperCase() + action.slice(1)} logged for ${sub ? sub.code : subId}`);
     });
   });
 
   document.querySelectorAll('.att-manual-input').forEach(inp => {
-    inp.addEventListener('change', () => {
+    inp.addEventListener('input', () => { // Fix: wrong event type
       const subId = inp.dataset.subid;
       const field = inp.dataset.field;
-      const val   = Math.max(0, parseInt(inp.value) || 0);
+      let val   = Math.max(0, parseInt(inp.value) || 0);
       inp.value   = val;
 
       if (field === 'total') {
-        const att   = DATA[subId].attendance;
-        att.absent  = Math.max(0, val - att.present - att.late);
+        const att = DATA[subId].attendance;
+        const usedClasses = att.present + att.late;
+        if (val < usedClasses) {
+          val = usedClasses;
+          inp.value = val;
+          showToast(`⚠️ Total cannot be lower than Present + Late (${usedClasses}). Total adjusted to ${val}.`);
+        }
+        const absent = Math.max(0, val - att.present - att.late);
+        DATA[subId].attendance.absent = absent;
         const absentInp = document.getElementById(`att-manual-absent-${subId}`);
-        if (absentInp) absentInp.value = att.absent;
+        if (absentInp) absentInp.value = absent;
       } else {
         DATA[subId].attendance[field] = val;
+        // Keep the total display in sync when present/absent/late changes directly
+        const att = DATA[subId].attendance;
+        const newTotal = att.present + att.absent + att.late;
+        const totalInp = document.getElementById(`att-manual-total-${subId}`);
+        if (totalInp) totalInp.value = newTotal;
       }
 
       saveData();
       updateAttCard(subId);
+
+      // Bug DASH-STALE fix: update dashboard if it's the active tab
+      if (document.getElementById('page-dashboard').classList.contains('active')) {
+        renderDashboard();
+        updateDashboardStats();
+      }
     });
   });
 
@@ -1372,16 +1918,21 @@ function attachAttendanceListeners() {
       DATA[subId].attendance = defaultSubjectData().attendance;
       saveData();
       renderAttendance();
-      showToast(`🗑️ Attendance cleared for ${sub.code}. Tap to undo.`, 4000);
       const toast = document.getElementById('toast');
+      clearTimeout(toast._timeout);
+      const freshToast = toast.cloneNode(true);
+      freshToast.id = 'toast';
+      toast.parentNode.replaceChild(freshToast, toast);
+      showToast(`🗑️ Attendance cleared for ${sub.code}. Tap to undo.`, 4000);
+      const currentToast = document.getElementById('toast');
       const undoFn = () => {
         DATA[subId].attendance = backup;
         saveData();
         renderAttendance();
         showToast(`↩️ Undo successful for ${sub.code}`);
-        toast.removeEventListener('click', undoFn);
+        currentToast.removeEventListener('click', undoFn);
       };
-      toast.addEventListener('click', undoFn);
+      currentToast.addEventListener('click', undoFn);
     });
   });
 }
@@ -1391,7 +1942,7 @@ function updateAttCard(subId) {
   const total = att.present + att.absent + att.late;
   const pct   = calcAttPctStrict(att);
   const attColor = pct !== null ? (pct >= 75 ? 'green' : pct >= 65 ? 'amber' : 'red') : '';
-  const barClass = attColor === 'green' ? '' : attColor === 'amber' ? 'warn' : 'danger';
+  const barClass = pct === null ? '' : attColor === 'green' ? 'safe' : attColor === 'amber' ? 'warn' : 'danger';
 
   const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
   set(`att-present-${subId}`, att.present);
@@ -1409,7 +1960,7 @@ function updateAttCard(subId) {
   const barEl = document.getElementById(`att-bar-${subId}`);
   if (barEl) {
     barEl.style.width = pct !== null ? Math.min(pct, 100).toFixed(1) + '%' : '0%';
-    barEl.className   = `att-pct-bar${barClass ? ' ' + barClass : ''}`;
+    barEl.className = 'att-pct-bar' + (barClass ? ' ' + barClass : '');
   }
 
   const pctText = document.getElementById(`att-pct-text-${subId}`);
@@ -1442,6 +1993,11 @@ function renderAnalyze() {
 
   const entered = SUBJECTS.filter(sub => {
     const m = DATA[sub.id].marks;
+    if (isLabSubject(sub)) {
+      return (m.tasks  && m.tasks.some(v => v !== null && v !== '')) ||
+             (m.vivas  && m.vivas.some(v => v !== null && v !== '')) ||
+             m.pbl !== null || m.oel !== null;
+    }
     return m.quizzes.some(v => v !== null && v !== '') ||
            m.assignments.some(v => v !== null && v !== '') ||
            m.pbl !== null || m.mid !== null || m.finalObt !== null;
@@ -1450,39 +2006,36 @@ function renderAnalyze() {
     `Data entered for ${entered} of ${SUBJECTS.length} subjects · ${totalCredits()} total credits`;
 
   renderBarChart('chart-marks', SUBJECTS.map(sub => ({
-    label: sub.code, pct: calcSubjectPct(DATA[sub.id].marks)
+    label: sub.code, pct: calcSubjectPct(DATA[sub.id].marks, sub)
   })));
   renderBarChart('chart-attendance', SUBJECTS.map(sub => ({
     label: sub.code, pct: calcAttPctStrict(DATA[sub.id].attendance)
   })));
 
-  // Strengths ≥ 80%
   const strengthsEl = document.getElementById('strengths-list');
   strengthsEl.innerHTML = '';
   let hasStrength = false;
   SUBJECTS.forEach(sub => {
-    const pct = calcSubjectPct(DATA[sub.id].marks);
+    const pct = calcSubjectPct(DATA[sub.id].marks, sub);
     if (pct !== null && pct >= 80) {
       hasStrength = true;
-      strengthsEl.innerHTML += `<div class="sw-item green"><span class="sw-item-name">${sub.code} — ${sub.name}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
+      strengthsEl.innerHTML += `<div class="sw-item green"><span class="sw-item-name">${escHtml(sub.code)} — ${escHtml(sub.name)}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
     }
   });
   if (!hasStrength) strengthsEl.innerHTML = '<div class="empty-msg">No subject ≥ 80% yet. Keep going! 💪</div>';
 
-  // Weaknesses < 60%
   const weaknessesEl = document.getElementById('weaknesses-list');
   weaknessesEl.innerHTML = '';
   let hasWeak = false;
   SUBJECTS.forEach(sub => {
-    const pct = calcSubjectPct(DATA[sub.id].marks);
+    const pct = calcSubjectPct(DATA[sub.id].marks, sub);
     if (pct !== null && pct < 60) {
       hasWeak = true;
-      weaknessesEl.innerHTML += `<div class="sw-item red"><span class="sw-item-name">${sub.code} — ${sub.name}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
+      weaknessesEl.innerHTML += `<div class="sw-item red"><span class="sw-item-name">${escHtml(sub.code)} — ${escHtml(sub.name)}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
     }
   });
   if (!hasWeak) weaknessesEl.innerHTML = '<div class="empty-msg">Nothing below 60%. Nice work! 🌟</div>';
 
-  // Attendance risk < 75%
   const attRiskEl = document.getElementById('att-risk-list');
   attRiskEl.innerHTML = '';
   let hasRisk = false;
@@ -1491,35 +2044,40 @@ function renderAnalyze() {
     if (pct !== null && pct < 75) {
       hasRisk = true;
       const cl = pct >= 65 ? 'amber' : 'red';
-      attRiskEl.innerHTML += `<div class="sw-item ${cl}"><span class="sw-item-name">${sub.code} — ${sub.name}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
+      attRiskEl.innerHTML += `<div class="sw-item ${cl}"><span class="sw-item-name">${escHtml(sub.code)} — ${escHtml(sub.name)}</span><span class="sw-item-pct">${pct.toFixed(1)}%</span></div>`;
     }
   });
   if (!hasRisk) attRiskEl.innerHTML = '<div class="empty-msg">All subjects above 75% ✅ Great attendance!</div>';
 
-  // Calc subject options
   const calcSubSel = document.getElementById('calc-subject');
-  calcSubSel.innerHTML = SUBJECTS.map(s => `<option value="${s.id}">${s.code} — ${s.name}</option>`).join('');
+  calcSubSel.innerHTML = SUBJECTS.map(s => `<option value="${escHtml(s.id)}">${escHtml(s.code)} — ${escHtml(s.name)}</option>`).join('');
 }
 
 function renderBarChart(containerId, items) {
   const el = document.getElementById(containerId);
   if (!el) return;
-  el.innerHTML = items.length ? '' : '<div class="empty-msg">No data entered yet.</div>';
+  if (!items || items.length === 0) {
+    el.innerHTML = '<div class="empty-msg">No data entered yet.</div>';
+    return;
+  }
+  el.innerHTML = '';
 
   items.forEach(item => {
-    const pct   = item.pct;
-    const color = pct !== null ? (pct >= 75 ? 'bar-green' : pct >= 60 ? 'bar-amber' : 'bar-red') : '';
-    const width = pct !== null ? Math.min(pct, 100).toFixed(1) : 0;
+    const pct       = item.pct;
+    const isNoData  = pct === null || pct === undefined || isNaN(pct);
+    const color     = isNoData ? 'no-data' : pct >= 75 ? 'bar-green' : pct >= 60 ? 'bar-amber' : 'bar-red';
+    // Bug: no-data was 100% width (misleading full bar). Now 0%. Also clamp negative pct to 0.
+    const width     = isNoData ? 0 : Math.min(Math.max(pct, 0), 100).toFixed(1);
 
     el.innerHTML += `
       <div class="bar-row">
-        <span class="bar-label">${item.label}</span>
+        <span class="bar-label">${escHtml(item.label)}</span>
         <div class="bar-track">
-          <div class="bar-fill ${pct !== null ? color : ''}" style="width:${width}%">
-            ${pct !== null && pct >= 15 ? `<span class="bar-pct">${pct.toFixed(0)}%</span>` : ''}
+          <div class="bar-fill ${color}" style="width:${width}%">
+            ${!isNoData && pct >= 15 ? `<span class="bar-pct">${pct.toFixed(0)}%</span>` : ''}
           </div>
         </div>
-        <span class="bar-val">${pct !== null ? pct.toFixed(0) + '%' : '—'}</span>
+        <span class="bar-val">${!isNoData ? pct.toFixed(0) + '%' : '—'}</span>
       </div>`;
   });
 }
@@ -1532,36 +2090,96 @@ function setupCalculator() {
     const finalTotal = parseFloat(document.getElementById('calc-final-total').value);
     const resultEl   = document.getElementById('calc-result');
 
-    if (!subId || isNaN(targetPct)) { resultEl.textContent = 'Please select a subject and target grade.'; return; }
-    if (isNaN(finalTotal) || finalTotal <= 0) { resultEl.textContent = 'Please enter the final exam total marks.'; return; }
+    if (!subId || isNaN(targetPct)) { resultEl.style.color = ''; resultEl.textContent = 'Please select a subject and target grade.'; return; }
+    if (isNaN(finalTotal) || finalTotal <= 0) { resultEl.style.color = ''; resultEl.textContent = 'Please enter the final exam total marks.'; return; }
+    if (targetPct < 0 || targetPct > 100) { resultEl.style.color = 'var(--red)'; resultEl.textContent = 'Target percentage must be between 0 and 100.'; return; }
 
     const sub = SUBJECTS.find(s => s.id === subId);
+    if (!sub || !DATA[subId]) { resultEl.style.color = 'var(--red)'; resultEl.textContent = 'Subject data not found. Try refreshing.'; return; }
     const d   = DATA[subId].marks;
-    let weightedSum = 0, weightCurr = 0;
 
-    const quizVals = d.quizzes.filter(v => v !== null && v !== '' && !isNaN(v));
-    if (quizVals.length > 0) { weightedSum += (quizVals.reduce((a,b)=>a+Number(b),0)/(quizVals.length*10))*15; weightCurr+=15; }
+    if (isLabSubject(sub)) {
+      resultEl.style.color = 'var(--amber)';
+      resultEl.textContent = 'ℹ️ Lab subjects do not have a final exam. Use the Marks tab to see your current lab percentage.';
+      return;
+    }
 
-    const assVals = d.assignments.filter(v => v !== null && v !== '' && !isNaN(v));
-    if (assVals.length > 0) { weightedSum += (assVals.reduce((a,b)=>a+Number(b),0)/(assVals.length*10))*10; weightCurr+=10; }
+    if (d.finalObt !== null && d.finalTotal !== null) {
+      const currentPct = calcSubjectPct(d, sub);
+      const currentGrade = pctToGrade(currentPct);
+      resultEl.textContent = `Final exam marks are already entered. Current grade: ${currentGrade.grade} (${currentPct !== null ? currentPct.toFixed(1) + '%' : 'N/A'})`;
+      resultEl.style.color = '';
+      return;
+    }
+    // Each component contributes its earned share on a 0–100 scale.
+    // weightedSum = earned points from non-final components (max 55).
+    // Final is worth 45%. Formula: requiredFinalPct = (targetPct - weightedSum) / 0.45
+    let weightedSum = 0;
+    let totalEnteredWeight = 0;
+    const quizVals = d.quizzes.filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
+    if (quizVals.length > 0) {
+      weightedSum += (quizVals.reduce((a,b)=>a+b,0) / (quizVals.length * 10)) * 15;
+      totalEnteredWeight += 15;
+    }
 
-    if (d.pbl !== null && d.pbl !== '' && !isNaN(d.pbl)) { weightedSum += (Number(d.pbl)/10)*5; weightCurr+=5; }
-    if (d.mid !== null && d.mid !== '' && !isNaN(d.mid)) { weightedSum += (Number(d.mid)/25)*25; weightCurr+=25; }
+    const assVals = d.assignments.filter(v => v !== null && v !== '' && Number.isFinite(Number(v))).map(Number);
+    if (assVals.length > 0) {
+      weightedSum += (assVals.reduce((a,b)=>a+b,0) / (assVals.length * 10)) * 10;
+      totalEnteredWeight += 10;
+    }
 
-    const finalWeight  = 45;
-    const totalWeight  = weightCurr + finalWeight;
-    const requiredFinalPct = ((targetPct * totalWeight / 100) - weightedSum) * 100 / finalWeight;
+    const pbl = normalizeMark(d.pbl, 10);
+    if (pbl !== null) { weightedSum += (pbl/10)*5; totalEnteredWeight += 5; }
+    const oel = normalizeMark(d.oel, 10);
+    if (oel !== null) { weightedSum += (oel/10)*5; totalEnteredWeight += 5; }
+    const mid = normalizeMark(d.mid, 25);
+    if (mid !== null) { weightedSum += (mid/25)*25; totalEnteredWeight += 25; }
+
+    // weightedSum is now the student's earned % points from non-final components (max 55).
+    // Final is worth 45%. Solve for required final percentage:
+    const finalWeight      = 45;
+    const requiredFinalPct = (targetPct - weightedSum) / (finalWeight / 100);
     const requiredMarks    = (requiredFinalPct / 100) * finalTotal;
     const g = pctToGrade(targetPct);
 
+    // Bug SS fix: build result with DOM nodes — no user data interpolated into innerHTML.
+    resultEl.textContent = '';
+    resultEl.style.color = '';
+
+    const epsilon = 1e-6;
     if (requiredFinalPct <= 0) {
       resultEl.textContent = `🎉 You've already secured ${g.grade} for ${sub.code} regardless of the final!`;
       resultEl.style.color = 'var(--green)';
     } else if (requiredFinalPct > 100) {
       resultEl.textContent = `❌ Even 100% on the final won't achieve ${g.grade} for ${sub.code} with your current marks.`;
       resultEl.style.color = 'var(--red)';
+    } else if (requiredFinalPct > 100 - epsilon) {
+      // Effectively needs a perfect score
+      resultEl.textContent = `💪 You need a perfect score (${finalTotal}/${finalTotal}) on the final to earn ${g.grade} in ${sub.code}.`;
+      resultEl.style.color = 'var(--amber)';
     } else {
-      resultEl.innerHTML = `To get <strong> ${g.grade} </strong> in <strong>${sub.code}</strong>, score at least <strong>${requiredMarks.toFixed(1)} / ${finalTotal}</strong> on the final (${requiredFinalPct.toFixed(1)}%).`;
+      const msg = document.createDocumentFragment();
+      const append = (text, bold) => {
+        if (bold) {
+          const s = document.createElement('strong');
+          s.textContent = text;
+          msg.appendChild(s);
+        } else {
+          msg.appendChild(document.createTextNode(text));
+        }
+      };
+      append('To get ', false);
+      append(g.grade, true);
+      append(' in ', false);
+      append(sub.code, true);
+      append(', score at least ', false);
+      append(`${requiredMarks.toFixed(1)} / ${finalTotal}`, true);
+      append(` on the final (${requiredFinalPct.toFixed(1)}%).`, false);
+      if (totalEnteredWeight < 55) {
+        msg.appendChild(document.createElement('br'));
+        append('⚠️ Assumes 0% for unentered components.', false);
+      }
+      resultEl.appendChild(msg);
       resultEl.style.color = requiredFinalPct >= 80 ? 'var(--amber)' : 'var(--green)';
     }
   });
@@ -1576,22 +2194,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const saved = loadData();
 
   if (!saved) {
-    // Fresh start — show setup
     DATA = initData([], {});
     setupWizard();
     showSetup();
   } else {
     DATA     = saved;
     SUBJECTS = DATA._subjects || DEFAULT_SUBJECTS;
-    // Migrate old format (no _subjects key)
     if (!DATA._subjects) {
       DATA._subjects = DEFAULT_SUBJECTS;
       SUBJECTS = DEFAULT_SUBJECTS;
     }
-    setupWizard(); // setup wizard listeners (needed even if hidden, for reset-all)
+    migrateData(DATA);
+    setupWizard();
     hideSetup();
     applyTheme(DATA._meta.theme || 'light');
     updateNavLabel();
+    saveData();
     renderAll();
   }
 
